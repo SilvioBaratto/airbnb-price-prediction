@@ -177,7 +177,38 @@ close to additive and linear, the straight line wins and boosting drops to third
 is best depends on whether its assumptions match the data, not on how sophisticated it is.
 
 Every part writes its curve to `output/` (`part2_pruning.csv` … `part8_nfl.csv`); `--charts`
-adds a PNG next to each.
+adds a PNG next to each. The summary table lands in `output/arc_summary.csv`, and
+`output/arc_run.json` records the seed and snapshot it came from.
+
+### Fixtures for the videos
+
+`scripts/export_fixtures.py` turns a run of the arc into the small JSON files the neuroespresso
+videos animate (videocraft, data key `airbnb_prezzi`): one per scene family, from the depth-3
+tree node by node to fifty trees' verdicts on one listing and the residuals shrinking round by
+round. Curves and headline numbers are read from the arc's output, after checking its seed
+and snapshot match; per-scene details are recomputed with the arc's own pipelines and seed.
+Nothing is typed by hand.
+
+```bash
+airbnb run-arc                                   # once
+python scripts/export_fixtures.py                # -> output/fixtures/airbnb_prezzi/
+python scripts/export_fixtures.py --out-dir <videocraft>/public/fixtures/airbnb_prezzi
+```
+
+| File | Scene |
+|---|---|
+| `repo.json` | the project's layout, from `git ls-files` |
+| `arc_metrics.json` | the summary table, plus the simulator's own test MAE and band coverage |
+| `mappa.json` | 2,000 listing dots on Rome, the 23 places, each municipio's median price |
+| `albero.json` | Part 1: the depth-3 tree, the error at each depth, 120 listings walking through it |
+| `potatura.json` | Part 2: the memorizing full tree and the pruning path |
+| `bagging.json` | Part 3: a ten-row bootstrap redraw, the error vs trees curve, fifty verdicts |
+| `foresta.json` | Part 4: first cuts of bagged vs forest trees, ρ and σ², error vs `m` |
+| `oob.json` | Part 5: which trees never drew one listing, and their verdict |
+| `importanza.json` | Part 6: the permutation-importance ranking, a shuffled column |
+| `boosting.json` | Part 7: error vs rounds, residuals of five listings round by round |
+| `nfl.json` | Part 8: the two leaderboards |
+| `simulatore.json` | the README's Trastevere quote and its comparables |
 
 ## ML project checklist → where it lives in the code
 

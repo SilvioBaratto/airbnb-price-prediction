@@ -64,6 +64,10 @@ ignore = [
     "B905",  # zip() strict= — the paired iterables are equal-length by construction here
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Scripts put the project root on sys.path before importing the package.
+"scripts/*.py" = ["E402"]
+
 [tool.pyright]
 extraPaths = ["."]
 venvPath = "."

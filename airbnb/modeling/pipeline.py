@@ -299,13 +299,17 @@ def column_groups(fitted: Pipeline) -> dict[str, list[int]]:
     return groups
 
 
+def column_owner(fitted: Pipeline) -> dict[int, str]:
+    """Map each design column index back to the raw feature it came from."""
+    return {i: col for col, idx in column_groups(fitted).items() for i in idx}
+
+
 def design_names(fitted: Pipeline) -> list[str]:
     """Return the design columns' readable names (``room_type=Private room``, ``bedrooms``)."""
     out: list[str] = []
-    groups = column_groups(fitted)
     pre = fitted.named_steps["pre"]
     raw_names = [str(n).split("__", 1)[1] for n in pre.get_feature_names_out()]
-    owner = {i: col for col, idx in groups.items() for i in idx}
+    owner = column_owner(fitted)
     for i, name in enumerate(raw_names):
         column = owner[i]
         out.append(column if name == column else f"{column}={name[len(column) + 1 :]}")

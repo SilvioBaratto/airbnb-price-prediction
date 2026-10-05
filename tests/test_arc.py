@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -84,8 +85,8 @@ def test_tree_correlation_is_lower_for_the_forest_than_for_bagging(
     """Hiding columns decorrelates the trees: the forest's rho is below bagging's."""
     bag = lambda n, s: pipeline.bagging_pipeline(n_estimators=n, seed=s)  # noqa: E731
     rf = lambda n, s: pipeline.forest_pipeline(n_estimators=n, max_features=2, seed=s)  # noqa: E731
-    bag_rho, bag_s2 = arc._tree_correlation(split, bag, n_sets=3, trees=15)
-    rf_rho, rf_s2 = arc._tree_correlation(split, rf, n_sets=3, trees=15)
+    bag_rho, bag_s2 = arc.tree_correlation(split, bag, n_sets=3, trees=15)
+    rf_rho, rf_s2 = arc.tree_correlation(split, rf, n_sets=3, trees=15)
     assert bag_s2 > 0 and rf_s2 > 0
     assert rf_rho < bag_rho
 
@@ -140,5 +141,9 @@ def test_part8_ranks_the_lineup_on_both_datasets(
 
 def test_main_runs_the_whole_arc_on_a_snapshot_file(snapshot_csv: Path, tmp_path: Path) -> None:
     """The orchestrator wires every part and prints the summary table."""
-    results = arc.main(["--listings", str(snapshot_csv), "--output-dir", str(tmp_path / "o")])
+    out = tmp_path / "o"
+    results = arc.main(["--listings", str(snapshot_csv), "--output-dir", str(out)])
     assert [r.part for r in results] == [0, 1, 2, 3, 4, 5, 6, 7, 7, 8]
+    summary = pd.read_csv(out / "arc_summary.csv")
+    assert summary["part"].tolist() == [r.part for r in results]
+    assert json.loads((out / "arc_run.json").read_text())["n_listings"] == 400

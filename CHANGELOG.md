@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/export_fixtures.py` — exports twelve JSON fixtures for the
+  neuroespresso video animations (`airbnb_prezzi`), checked against the arc
+  run they quote.
+- `airbnb run-arc` also writes `arc_summary.csv` and `arc_run.json`.
+
 ## [0.1.0] - 2026-10-05
 
 ### Added

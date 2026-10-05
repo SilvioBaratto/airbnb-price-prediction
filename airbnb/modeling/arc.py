@@ -1,7 +1,9 @@
 """Orchestrator for the eight-part tree-ensemble arc (README "The model, part by part").
 
 Loads the snapshot **once**, carves the one fixed 80/20 split (Parts 1-7 share it), then runs
-Parts 1->8 as ``run_partN`` section functions and prints the summary table. Every number is
+Parts 1->8 as ``run_partN`` section functions and prints the summary table. Besides each part's
+CSV, the output directory receives ``arc_summary.csv`` (the table) and ``arc_run.json`` (the
+seed and snapshot it came from), which ``scripts/export_fixtures.py`` reads. Every number is
 produced here by running scikit-learn at ``config.SEED`` — never hand-written. Whenever a part
 has to *choose* something (pruning strength, number of boosting rounds) it chooses on the
 training rows; the test rows are only ever scored. Part 8 runs its own 5-fold CV on the full
@@ -17,8 +19,10 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import json
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -70,11 +74,6 @@ def parse_cli(argv: list[str] | None = None) -> argparse.Namespace:
         "--charts", action="store_true", help="also write a PNG chart next to each curve CSV"
     )
     return parser.parse_args(argv)
-
-
-def _owner(fitted: Pipeline) -> dict[int, str]:
-    """Map each design column index back to the raw feature it came from."""
-    return {i: col for col, idx in modeling.column_groups(fitted).items() for i in idx}
 
 
 def _write(frame: pd.DataFrame, args: argparse.Namespace, name: str) -> Path:
@@ -288,19 +287,24 @@ def run_part3(
 
 
 # --- Part 4 — trees that stop copying each other -------------------------------
-def _first_cuts(fitted: Pipeline, owner: dict[int, str], n_trees: int) -> Counter[str]:
-    """Count which raw column the first ``n_trees`` trees cut on at their root."""
+def first_cuts(fitted: Pipeline, n_trees: int) -> list[str]:
+    """Return the raw column each of the first ``n_trees`` trees cuts on at its root, in order.
+
+    Bagging hands each tree its columns in a shuffled order (``estimators_features_``), so a
+    tree's local feature index is mapped back through it before naming the column.
+    """
+    owner = modeling.column_owner(fitted)
     ensemble = fitted.named_steps["est"]
     feature_sets = getattr(ensemble, "estimators_features_", None)
-    cuts: Counter[str] = Counter()
+    cuts: list[str] = []
     for i, tree in enumerate(ensemble.estimators_[:n_trees]):
         local = int(tree.tree_.feature[0])
         column = int(feature_sets[i][local]) if feature_sets is not None else local
-        cuts[owner[column]] += 1
+        cuts.append(owner[column])
     return cuts
 
 
-def _tree_correlation(
+def tree_correlation(
     split: modeling.Split,
     make: Callable[[int, int], Pipeline],
     *,
@@ -360,16 +364,16 @@ def run_part4(
     """
     forest = modeling.forest_pipeline(n_estimators=n_estimators, oob_score=True, seed=seed)
     forest.fit(split.X_train, split.y_train)
-    owner = _owner(forest)
+    owner = modeling.column_owner(forest)
     p = len(owner)
     m = max(1, int(modeling.FOREST_MAX_FEATURES * p))
 
-    bag_cuts = _first_cuts(bagged, owner, FIRST_SPLIT_SAMPLE)
-    forest_cuts = _first_cuts(forest, owner, FIRST_SPLIT_SAMPLE)
-    bag_rho, bag_s2 = _tree_correlation(
+    bag_cuts = Counter(first_cuts(bagged, FIRST_SPLIT_SAMPLE))
+    forest_cuts = Counter(first_cuts(forest, FIRST_SPLIT_SAMPLE))
+    bag_rho, bag_s2 = tree_correlation(
         split, lambda n, s: modeling.bagging_pipeline(n_estimators=n, seed=s), seed=seed
     )
-    rf_rho, rf_s2 = _tree_correlation(
+    rf_rho, rf_s2 = tree_correlation(
         split, lambda n, s: modeling.forest_pipeline(n_estimators=n, seed=s), seed=seed
     )
 
@@ -780,6 +784,14 @@ def main(argv: list[str] | None = None) -> list[modeling.PartResult]:
 
     print()
     print(modeling.format_report(results))
+    _write(pd.DataFrame([asdict(r) for r in results]), args, "arc_summary.csv")
+    run = {
+        "listings": str(args.listings),
+        "n_listings": len(listings),
+        "seed": args.seed,
+        "test_size": args.test_size,
+    }
+    (args.output_dir / "arc_run.json").write_text(json.dumps(run, indent=2) + "\n")
     return results
 
 
