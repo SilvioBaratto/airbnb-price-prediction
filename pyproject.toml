@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airbnb-price-prediction"
+version = "0.1.0"
+description = "Let's Build Airbnb's Algorithm — a clean-architecture teaching project: real Inside Airbnb listings for Rome, an eight-part tree-ensemble arc, and an interactive nightly-price simulator."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "neuroespresso" }]
+keywords = [
+    "machine-learning",
+    "decision-trees",
+    "random-forest",
+    "gradient-boosting",
+    "scikit-learn",
+    "clean-architecture",
+    "teaching",
+    "airbnb",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Education",
+]
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.4",
+    "matplotlib>=3.7",
+    "joblib>=1.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/SilvioBaratto/airbnb-price-prediction"
+Repository = "https://github.com/SilvioBaratto/airbnb-price-prediction"
+Issues = "https://github.com/SilvioBaratto/airbnb-price-prediction/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6", "pyright>=1.1"]
+
+[project.scripts]
+airbnb = "airbnb.cli.app:main"
+
+[tool.setuptools.packages.find]
+include = ["airbnb*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+ignore = [
+    "B905",  # zip() strict= — the paired iterables are equal-length by construction here
+]
+
+[tool.pyright]
+extraPaths = ["."]
+venvPath = "."
+venv = ".venv"

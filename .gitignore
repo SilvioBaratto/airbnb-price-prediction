@@ -1,0 +1,38 @@
+output/*
+!output/.gitkeep
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
+*.egg-info/
+
+# test / tooling artifacts
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# os
+.DS_Store
+Thumbs.db
+
+# scratch / research artifacts (not part of the deliverable)
+.scratch/
+
+# planning artifacts (kept locally, not part of the tracked deliverable)
+SPEC.md
+tasks/
+
+# The raw Inside Airbnb dump carries host names, photos, free-text descriptions and profile
+# URLs: personal data we have no reason to redistribute. `airbnb fetch-data` downloads it on
+# demand; only the cleaned, host-free snapshot in data/raw/ is committed.
+data/sources/*.csv.gz
+
+# Persisted model weights are rebuilt in seconds by `airbnb train` and are
+# scikit-learn-version-sensitive, so they are not committed.
+models/*
+!models/.gitkeep
