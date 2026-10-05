@@ -3,12 +3,13 @@
 The loop asks for a place (by name or number), the room type, then guests, bedrooms, beds and
 bathrooms; it prints the suggested price from the injected
 :class:`~airbnb.application.pricing.PricingService` and the real listings nearby that look like
-it, until the user quits with ``q``. I/O is injected (``input_fn`` / ``out``) so the loop is
-driven and captured in tests.
+it, until the user quits with ``q``, Ctrl-D or Ctrl-C. I/O is injected (``input_fn`` / ``out``)
+so the loop is driven and captured in tests.
 """
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 from airbnb.application.ports import PlaceRepository
@@ -26,21 +27,47 @@ _INTRO = (
 
 
 class _Quit(Exception):
-    """Raised by a prompt when the user types a quit word."""
+    """Raised by a prompt when the user leaves: a quit word, end of input, or Ctrl-C.
+
+    Attributes:
+        mid_line: the input ended without a newline, so the cursor still sits on the prompt.
+    """
+
+    def __init__(self, mid_line: bool = False) -> None:
+        super().__init__()
+        self.mid_line = mid_line
 
 
 def _ask(prompt: str, input_fn: Callable[[str], str]) -> str:
-    raw = input_fn(prompt).strip()
+    try:
+        raw = input_fn(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        raise _Quit(mid_line=True) from None
     if raw.lower() in _QUIT:
         raise _Quit
     return raw
 
 
+def _as_int(raw: str) -> int | None:
+    """Read a typed whole number, or ``None``.
+
+    ``isdecimal`` rather than ``isdigit``, since "²" is a digit ``int`` rejects, and the
+    ``ValueError`` guard because ``int`` also refuses strings past 4,300 digits.
+    """
+    if not raw.isdecimal():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
 def _resolve(places: PlaceRepository, raw: str) -> Place | None:
     """Resolve typed text to a place: a number is an id, anything else a name search."""
-    if raw.isdigit():
+    number = _as_int(raw)
+    if number is not None:
         try:
-            return places.get(int(raw))
+            return places.get(number)
         except KeyError:
             return None
     hits = places.search(raw)
@@ -73,12 +100,22 @@ def _prompt_room_type(input_fn: Callable[[str], str], out: Callable[[str], None]
         raw = _ask(f"Room type ({menu}) [1]: ", input_fn)
         if not raw:
             return choices[0]
-        if raw.isdigit() and 1 <= int(raw) <= len(choices):
-            return choices[int(raw) - 1]
+        number = _as_int(raw)
+        if number is not None and 1 <= number <= len(choices):
+            return choices[number - 1]
         hits = [c for c in choices if c.lower().startswith(raw.lower())]
         if hits:
             return hits[0]
         out(f"  {raw!r} is not a room type.")
+
+
+def _parse_number(raw: str) -> float | None:
+    """Read a typed number, decimal comma allowed; ``None`` for text, NaN and infinity."""
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
 
 
 def _prompt_number(
@@ -86,15 +123,20 @@ def _prompt_number(
     default: float,
     input_fn: Callable[[str], str],
     out: Callable[[str], None],
+    *,
+    whole: bool,
 ) -> float:
     while True:
         raw = _ask(f"{label} [{default:g}]: ", input_fn)
         if not raw:
             return default
-        try:
-            return float(raw.replace(",", "."))
-        except ValueError:
+        value = _parse_number(raw)
+        if value is None:
             out(f"  {raw!r} is not a number.")
+        elif whole and not value.is_integer():
+            out(f"  {raw!r} is not a whole number.")
+        else:
+            return value
 
 
 def _prompt_request(
@@ -103,10 +145,10 @@ def _prompt_request(
     place = _prompt_place(places, input_fn, out)
     room_type = _prompt_room_type(input_fn, out)
     while True:
-        guests = int(_prompt_number("Guests", 2, input_fn, out))
-        bedrooms = int(_prompt_number("Bedrooms", max(1, guests // 2), input_fn, out))
-        beds = int(_prompt_number("Beds", max(1, (guests + 1) // 2), input_fn, out))
-        bathrooms = _prompt_number("Bathrooms", 1, input_fn, out)
+        guests = int(_prompt_number("Guests", 2, input_fn, out, whole=True))
+        bedrooms = int(_prompt_number("Bedrooms", max(1, guests // 2), input_fn, out, whole=True))
+        beds = int(_prompt_number("Beds", max(1, (guests + 1) // 2), input_fn, out, whole=True))
+        bathrooms = _prompt_number("Bathrooms", 1, input_fn, out, whole=False)
         try:
             return ListingRequest(place, room_type, guests, bedrooms, beds, bathrooms)
         except ValueError as exc:
@@ -132,7 +174,9 @@ def run_simulator(
     while True:
         try:
             request = _prompt_request(places, input_fn, out)
-        except _Quit:
+        except _Quit as quit_:
+            if quit_.mid_line:
+                out("")
             break
         out(f"\n{describe(request)}")
         out(render_quote(pricing.quote(request)))

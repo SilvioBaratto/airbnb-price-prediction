@@ -12,7 +12,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/export_fixtures.py` — exports twelve JSON fixtures for the
   neuroespresso video animations (`airbnb_prezzi`), checked against the arc
   run they quote.
-- `airbnb run-arc` also writes `arc_summary.csv` and `arc_run.json`.
+- `airbnb run-arc` also writes `arc_summary.csv` and `arc_run.json`, a manifest
+  of the finished run (snapshot SHA-256, seed, split, ensemble sizes, and the
+  SHA-256 of every CSV it wrote).
+
+### Changed
+
+- `paths.py` moved from `airbnb/infrastructure/` to `airbnb/`, a leaf module:
+  `modeling` no longer imports `infrastructure`, which closed a package-level
+  cycle. The layering test now forbids mutual imports and sees relative and
+  `from airbnb import x` imports.
+- Part 4's tree correlation is now the unbiased one-way ANOVA estimate,
+  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.046
+  (forest), where the old estimator read 0.058 and 0.029.
+- Part 8's summary row no longer puts its cross-validated MAE in the held-out
+  test column.
+
+### Fixed
+
+- The simulator exits cleanly on end of input (Ctrl-D, a finished pipe) and on
+  Ctrl-C, instead of raising a traceback.
+- The simulator refuses non-whole guests, bedrooms and beds ("2.5" was silently
+  read as 2) and NaN or infinity (which crashed it).
+- `run_part7` no longer crashes when given fewer than 100 rounds.
+- The fixture export refuses an arc run with another snapshot, split or ensemble
+  size (it only checked seed and row count) and any CSV altered after the run,
+  ships pruning alphas with
+  significant digits (12 of 20 were rounded to 0), and writes strict JSON.
+- README and CONTRIBUTING figures re-measured: model ~1 MB, test suite ~40 s.
 
 ## [0.1.0] - 2026-10-05
 

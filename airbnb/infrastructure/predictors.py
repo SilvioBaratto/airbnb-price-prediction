@@ -16,8 +16,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from airbnb import paths
 from airbnb.domain import config
-from airbnb.infrastructure import paths
 from airbnb.modeling import pipeline
 
 # The band reports where 80% of similar listings sit: wide enough to be honest about how

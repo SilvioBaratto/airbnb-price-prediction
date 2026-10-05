@@ -18,11 +18,28 @@ from airbnb.infrastructure.repositories import CsvListingRepository, CsvPlaceRep
 PLACE = Place(1, "Trastevere", "I Centro Storico", 41.8894, 12.4700)
 
 
-def _drive(answers: list[str], pricing: PricingService, places: CsvPlaceRepository) -> str:
-    """Run the simulator on scripted answers and return everything it printed."""
+def _drive(
+    answers: list[str],
+    pricing: PricingService,
+    places: CsvPlaceRepository,
+    *,
+    then: type[BaseException] = EOFError,
+) -> str:
+    """Run the simulator on scripted answers and return everything it printed.
+
+    Once the answers run out, the next prompt raises ``then``: ``EOFError`` is what ``input()``
+    does when piped stdin ends or the user presses Ctrl-D, ``KeyboardInterrupt`` is Ctrl-C.
+    """
     feed = iter(answers)
+
+    def answer(_prompt: str) -> str:
+        try:
+            return next(feed)
+        except StopIteration:
+            raise then from None
+
     lines: list[str] = []
-    run_simulator(pricing, places, input_fn=lambda _prompt: next(feed), out=lines.append)
+    run_simulator(pricing, places, input_fn=answer, out=lines.append)
     return "\n".join(lines)
 
 
@@ -86,6 +103,32 @@ def test_simulator_quits_from_a_number_prompt(wiring) -> None:
     """Typing q mid-listing ends the session without a traceback."""
     text = _drive(["1", "", "quit"], *wiring)
     assert "Suggested price" not in text and text.endswith("Ciao!")
+
+
+@pytest.mark.parametrize("ending", [EOFError, KeyboardInterrupt])
+def test_simulator_leaves_cleanly_on_end_of_input_or_ctrl_c(wiring, ending) -> None:
+    """Ctrl-D, an exhausted pipe or Ctrl-C mid-listing end the session with no traceback."""
+    text = _drive(["citta", "2"], *wiring, then=ending)
+    assert "Suggested price" not in text
+    assert text.endswith("\nCiao!")
+    assert text.splitlines()[-2] == ""
+
+
+def test_simulator_insists_on_whole_finite_counts(wiring) -> None:
+    """Half a guest, NaN and infinity are refused instead of truncated or crashing."""
+    text = _drive(["citta", "", "2.5", "nan", "inf", "3", "", "", "1,5", "q"], *wiring)
+    assert "'2.5' is not a whole number" in text
+    assert "'nan' is not a number" in text and "'inf' is not a number" in text
+    assert "3 guests" in text and "1.5 bathrooms" in text
+
+
+def test_simulator_does_not_crash_on_digits_int_cannot_read(wiring) -> None:
+    """A superscript two, or 5,000 digits (past int()'s limit), is a failed lookup, not a crash."""
+    huge = "9" * 5000
+    text = _drive(["²", huge, "citta", huge, "q"], *wiring)
+    assert "No place matches '²'" in text
+    assert text.count("No place matches") == 2
+    assert "is not a room type" in text and text.endswith("Ciao!")
 
 
 # --- parser -------------------------------------------------------------------

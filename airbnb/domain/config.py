@@ -20,7 +20,7 @@ CITY_CENTER_NAME = "Piazza Venezia"
 
 # The nightly-price slice the model learns. Below 20 EUR are placeholders and data-entry slips,
 # above 1000 EUR are villas and event venues that a nightly-price model for ordinary stays
-# should not chase. Together they drop ~1.5% of the priced listings.
+# should not chase. Together they drop about 1% of the priced listings.
 PRICE_MIN_EUR = 20.0
 PRICE_MAX_EUR = 1000.0
 

@@ -85,10 +85,35 @@ def test_tree_correlation_is_lower_for_the_forest_than_for_bagging(
     """Hiding columns decorrelates the trees: the forest's rho is below bagging's."""
     bag = lambda n, s: pipeline.bagging_pipeline(n_estimators=n, seed=s)  # noqa: E731
     rf = lambda n, s: pipeline.forest_pipeline(n_estimators=n, max_features=2, seed=s)  # noqa: E731
-    bag_rho, bag_s2 = arc.tree_correlation(split, bag, n_sets=3, trees=15)
-    rf_rho, rf_s2 = arc.tree_correlation(split, rf, n_sets=3, trees=15)
-    assert bag_s2 > 0 and rf_s2 > 0
-    assert rf_rho < bag_rho
+    bagged = arc.tree_correlation(split, bag, n_sets=3, trees=15, repeats=2)
+    forest = arc.tree_correlation(split, rf, n_sets=3, trees=15, repeats=2)
+    for corr in (bagged, forest):
+        assert 0.0 <= corr.rho <= 1.0 and corr.rho_sd >= 0.0 and corr.sigma2 > 0
+        assert corr.slice_rows == len(split.y_train) // 3
+    assert forest.rho < bagged.rho
+
+
+@pytest.mark.parametrize("true_rho", [0.05, 0.3, 0.8])
+def test_intraclass_correlation_recovers_a_known_rho(true_rho: float) -> None:
+    """On data built with a known shared share, the estimate lands on it, with five sets.
+
+    The plain-variance estimator this replaced read, over 20 such draws, 0.66 of the truth at
+    rho = 0.05 (the arc's regime) and 0.84 at rho = 0.3.
+    """
+    rng = np.random.default_rng(0)
+    sets, trees, listings, sigma2 = 5, 25, 4000, 100.0
+    shared = rng.normal(0, np.sqrt(true_rho * sigma2), (sets, 1, listings))
+    own = rng.normal(0, np.sqrt((1 - true_rho) * sigma2), (sets, trees, listings))
+    rho, total = arc.intraclass_correlation(shared + own)
+    assert rho == pytest.approx(true_rho, abs=0.02)
+    assert total == pytest.approx(sigma2, rel=0.05)
+
+
+def test_intraclass_correlation_is_never_negative() -> None:
+    """Identical sets (no shared quirk at all) give rho = 0, not a negative correlation."""
+    own = np.random.default_rng(1).normal(size=(4, 10, 500))
+    rho, _ = arc.intraclass_correlation(own - own.mean(axis=1, keepdims=True))
+    assert rho == 0.0
 
 
 def test_part5_oob_error_is_close_to_the_test_error(
@@ -113,9 +138,14 @@ def test_part6_ranks_every_column_and_finds_the_real_drivers(
 
 
 def test_part7_tunes_rounds_on_validation_for_both_losses(
-    split: pipeline.Split, args: argparse.Namespace
+    split: pipeline.Split, args: argparse.Namespace, capsys: pytest.CaptureFixture
 ) -> None:
     """Two results (squared and absolute loss), each with a round count within the cap."""
+    assert len(arc.run_part7(split, args, max_iter=5)) == 2  # fewer rounds than the milestones
+    for line in capsys.readouterr().out.splitlines():
+        if "by round:" in line:
+            rounds = [int(chunk.split(" ->")[0]) for chunk in line.split(": ", 1)[1].split(", ")]
+            assert rounds == sorted(set(rounds))  # each round once, in order
     results = arc.run_part7(split, args, max_iter=120)
     assert [r.part for r in results] == [7, 7]
     for r in results:
@@ -136,7 +166,8 @@ def test_part8_ranks_the_lineup_on_both_datasets(
     assert board.groupby("dataset")["model"].count().eq(len(arc.lineup([], []))).all()
     diabetes = board[board["dataset"] == "diabetes"]
     assert diabetes.iloc[0]["model"] in {"OLS", "Lasso"}
-    assert "Rome #1" in result.note
+    assert "Rome #1" in result.note and "CV MAE" in result.note
+    assert result.mae_test is None  # a CV score is not a held-out test score
 
 
 def test_main_runs_the_whole_arc_on_a_snapshot_file(snapshot_csv: Path, tmp_path: Path) -> None:
@@ -146,4 +177,28 @@ def test_main_runs_the_whole_arc_on_a_snapshot_file(snapshot_csv: Path, tmp_path
     assert [r.part for r in results] == [0, 1, 2, 3, 4, 5, 6, 7, 7, 8]
     summary = pd.read_csv(out / "arc_summary.csv")
     assert summary["part"].tolist() == [r.part for r in results]
-    assert json.loads((out / "arc_run.json").read_text())["n_listings"] == 400
+    manifest = json.loads((out / "arc_run.json").read_text())
+    assert manifest["n_listings"] == 400 and manifest["test_size"] == 0.2
+    assert manifest["snapshot_sha256"] == pipeline.file_sha256(snapshot_csv)
+    assert manifest["listings"] == snapshot_csv.name
+    written = sorted(p.name for p in out.glob("*.csv"))
+    assert sorted(manifest["outputs"]) == written and "arc_summary.csv" in written
+    for name, digest in manifest["outputs"].items():
+        assert pipeline.file_sha256(out / name) == digest
+
+
+def test_a_crashed_run_leaves_no_manifest(
+    snapshot_csv: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old manifest goes first, so CSVs from a half-finished run never look complete."""
+    out = tmp_path / "o"
+    out.mkdir()
+    (out / "arc_run.json").write_text("{}")
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("killed mid-run")
+
+    monkeypatch.setattr(arc, "run_part2", boom)
+    with pytest.raises(RuntimeError):
+        arc.main(["--listings", str(snapshot_csv), "--output-dir", str(out)])
+    assert not (out / "arc_run.json").exists()

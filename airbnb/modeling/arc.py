@@ -2,12 +2,13 @@
 
 Loads the snapshot **once**, carves the one fixed 80/20 split (Parts 1-7 share it), then runs
 Parts 1->8 as ``run_partN`` section functions and prints the summary table. Besides each part's
-CSV, the output directory receives ``arc_summary.csv`` (the table) and ``arc_run.json`` (the
-seed and snapshot it came from), which ``scripts/export_fixtures.py`` reads. Every number is
-produced here by running scikit-learn at ``config.SEED`` — never hand-written. Whenever a part
-has to *choose* something (pruning strength, number of boosting rounds) it chooses on the
-training rows; the test rows are only ever scored. Part 8 runs its own 5-fold CV on the full
-snapshot and on a second, unrelated dataset.
+CSV, the output directory receives ``arc_summary.csv`` (the table) and ``arc_run.json``, the
+manifest of a finished run (snapshot digest, seed, split, ensemble sizes, and the digest of
+every CSV it wrote), which ``scripts/export_fixtures.py`` checks before quoting any of it.
+Every number is produced here by running scikit-learn at ``config.SEED`` — never hand-written.
+Whenever a part has to *choose* something (pruning strength, number of boosting rounds) it
+chooses on the training rows; the test rows are only ever scored. Part 8 runs its own 5-fold CV
+on the full snapshot and on a second, unrelated dataset.
 
 Usage::
 
@@ -22,7 +23,7 @@ import argparse
 import json
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +33,8 @@ from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.tree import DecisionTreeRegressor, export_text
 
+from airbnb import paths
 from airbnb.domain import config
-from airbnb.infrastructure import paths
 from airbnb.modeling import pipeline as modeling
 
 PRUNING_GRID_SIZE = 20
@@ -42,6 +43,7 @@ FIRST_SPLIT_SAMPLE = 50
 M_SWEEP_TREES = 100
 CORRELATION_SETS = 5
 CORRELATION_TREES = 25
+CORRELATION_REPEATS = 4
 BOOSTING_MAX_ITER = 3000
 CV_FOLDS = 5
 
@@ -290,8 +292,9 @@ def run_part3(
 def first_cuts(fitted: Pipeline, n_trees: int) -> list[str]:
     """Return the raw column each of the first ``n_trees`` trees cuts on at its root, in order.
 
-    Bagging hands each tree its columns in a shuffled order (``estimators_features_``), so a
-    tree's local feature index is mapped back through it before naming the column.
+    Bagging records the columns each tree was given (``estimators_features_``) and a tree's
+    feature index counts within that list, so it is mapped back before naming the column. With
+    every column given, as here, the map is the identity, but a subset would not be.
     """
     owner = modeling.column_owner(fitted)
     ensemble = fitted.named_steps["est"]
@@ -304,44 +307,101 @@ def first_cuts(fitted: Pipeline, n_trees: int) -> list[str]:
     return cuts
 
 
+@dataclass(frozen=True)
+class TreeCorrelation:
+    """ESL's ``rho`` and ``sigma2`` for one ensemble recipe, and how firmly they are measured.
+
+    Attributes:
+        rho: correlation between two trees grown on the same data, averaged over repeats.
+        rho_sd: spread of ``rho`` across the repeats, each slicing the data differently.
+        sigma2: variance of one tree's prediction for a listing, over data and randomness.
+        slice_rows: training rows each tree was grown on. ``rho`` and ``sigma2`` describe trees
+            of that size, not the arc's full-data ensembles.
+    """
+
+    rho: float
+    rho_sd: float
+    sigma2: float
+    slice_rows: int
+
+    def variance_of_average(self, n_trees: int) -> float:
+        """Return ``rho*sigma2 + (1 - rho)*sigma2/n_trees``, the variance of an n-tree average."""
+        return self.rho * self.sigma2 + (1 - self.rho) * self.sigma2 / n_trees
+
+
+def intraclass_correlation(per_set: np.ndarray) -> tuple[float, float]:
+    """Split tree-to-tree variance into a shared part and a per-tree part (one-way ANOVA).
+
+    ``per_set[k, t, i]`` is tree ``t`` of the ensemble grown on data set ``k``, predicting
+    listing ``i``. Trees grown on the same set share that set's quirks; the share of their
+    variance that comes from the set is the correlation ``rho`` of two such trees. The
+    within-set and between-set mean squares give unbiased estimates of both parts, where the
+    plain variances would not: with a handful of sets, the variance of the set means is
+    ``(K - 1)/K`` of its expectation, which alone would bias ``rho`` low by tens of percent.
+
+    Args:
+        per_set: predictions shaped ``(sets, trees per set, listings)``, at least two of each.
+
+    Returns:
+        ``(rho, sigma2)``: ``rho`` in ``[0, 1]`` and the total variance of one tree's
+        prediction, both averaged over the listings.
+    """
+    _, trees, _ = per_set.shape
+    within = float(per_set.var(axis=1, ddof=1).mean())
+    set_means = per_set.mean(axis=1)
+    shared = max(float(set_means.var(axis=0, ddof=1).mean()) - within / trees, 0.0)
+    sigma2 = shared + within
+    return shared / sigma2, sigma2
+
+
 def tree_correlation(
     split: modeling.Split,
     make: Callable[[int, int], Pipeline],
     *,
     n_sets: int = CORRELATION_SETS,
     trees: int = CORRELATION_TREES,
+    repeats: int = CORRELATION_REPEATS,
     seed: int = config.SEED,
-) -> tuple[float, float]:
-    """Estimate ESL's ``(rho, sigma2)`` for an ensemble recipe, as in ESL figure 15.9.
+) -> TreeCorrelation:
+    """Measure ESL's ``rho`` and ``sigma2`` for an ensemble recipe, as in ESL figure 15.9.
 
-    ``sigma2`` is how much one tree's prediction for a listing varies, ``rho`` the correlation
-    between two trees grown on the *same* training data. Both are about repeating the whole
-    experiment on fresh data, so the training rows are cut into ``n_sets`` disjoint slices, each
-    standing in for an independent sample of the city, and ``trees`` trees are grown on each.
-    Across slices the ensemble mean varies by ``rho*sigma2 + (1 - rho)*sigma2/trees``, which is
-    solved for ``rho``. Correlating the trees' raw errors instead would mostly measure the noise
-    in the prices, which every tree shares.
+    Both are about repeating the whole experiment on fresh data, so the training rows are cut
+    into ``n_sets`` disjoint slices, each standing in for an independent sample of the city,
+    and ``trees`` trees are grown on each (:func:`intraclass_correlation` does the arithmetic).
+    The slicing is redone ``repeats`` times to show how much ``rho`` moves. Correlating the
+    trees' raw errors instead would mostly measure the noise in the prices, which every tree
+    shares.
 
     Args:
         split: the shared split; slices come from its training rows, predictions are taken on
             its test listings.
         make: builds an unfitted ensemble from ``(n_estimators, seed)``.
-        n_sets: how many disjoint training slices to grow ensembles on.
+        n_sets: how many disjoint training slices each repeat grows ensembles on.
         trees: ensemble size per slice.
-        seed: shuffles the training rows before slicing.
+        repeats: how many independent slicings to average over.
+        seed: seeds the slicings and the ensembles.
 
     Returns:
-        ``(rho, sigma2)``, averaged over the test listings.
+        The averaged ``rho`` and ``sigma2``, the spread of ``rho``, and the slice size.
     """
-    order = np.random.default_rng(seed).permutation(len(split.y_train))
-    per_set = []
-    for k, rows in enumerate(np.array_split(order, n_sets)):
-        model = make(trees, seed + k).fit(split.X_train.iloc[rows], split.y_train[rows])
-        per_set.append(modeling.tree_predictions(model, split.X_test))
-    sigma2 = float(np.vstack(per_set).var(axis=0).mean())
-    between = float(np.var([p.mean(axis=0) for p in per_set], axis=0).mean())
-    rho = (between / sigma2 - 1 / trees) / (1 - 1 / trees)
-    return float(rho), sigma2
+    n_train = len(split.y_train)
+    rhos, sigmas = [], []
+    for rep in range(repeats):
+        order = np.random.default_rng(seed + rep).permutation(n_train)
+        per_set = []
+        for k, rows in enumerate(np.array_split(order, n_sets)):
+            model = make(trees, seed + rep * n_sets + k)
+            model.fit(split.X_train.iloc[rows], split.y_train[rows])
+            per_set.append(modeling.tree_predictions(model, split.X_test))
+        rho, sigma2 = intraclass_correlation(np.stack(per_set))
+        rhos.append(rho)
+        sigmas.append(sigma2)
+    return TreeCorrelation(
+        rho=float(np.mean(rhos)),
+        rho_sd=float(np.std(rhos, ddof=1)) if repeats > 1 else 0.0,
+        sigma2=float(np.mean(sigmas)),
+        slice_rows=n_train // n_sets,
+    )
 
 
 def run_part4(
@@ -359,8 +419,10 @@ def run_part4(
     averaging them cancels little. Hiding columns forces different first cuts, lowers the
     correlation ``rho`` between trees, and with it the variance of their average,
     ``rho*sigma2 + (1 - rho)*sigma2/B``, which no number of trees ``B`` can push below
-    ``rho*sigma2``. The forest is fitted with ``oob_score=True`` so
-    Parts 5 and 6 can reuse it. Writes ``part4_mtry.csv`` (m, test MAE).
+    ``rho*sigma2``. ``rho`` and ``sigma2`` are measured on trees grown on slices of the
+    training rows (see :func:`tree_correlation`), so the printed variances are for trees of that
+    size. The forest is fitted with ``oob_score=True`` so Parts 5 and 6 can reuse it. Writes
+    ``part4_mtry.csv`` (m, test MAE).
     """
     forest = modeling.forest_pipeline(n_estimators=n_estimators, oob_score=True, seed=seed)
     forest.fit(split.X_train, split.y_train)
@@ -370,10 +432,10 @@ def run_part4(
 
     bag_cuts = Counter(first_cuts(bagged, FIRST_SPLIT_SAMPLE))
     forest_cuts = Counter(first_cuts(forest, FIRST_SPLIT_SAMPLE))
-    bag_rho, bag_s2 = tree_correlation(
+    bag_corr = tree_correlation(
         split, lambda n, s: modeling.bagging_pipeline(n_estimators=n, seed=s), seed=seed
     )
-    rf_rho, rf_s2 = tree_correlation(
+    rf_corr = tree_correlation(
         split, lambda n, s: modeling.forest_pipeline(n_estimators=n, seed=s), seed=seed
     )
 
@@ -412,12 +474,17 @@ def run_part4(
     print(f"[Part 4] first cut of {FIRST_SPLIT_SAMPLE} bagged trees: {_top(bag_cuts)}")
     print(f"[Part 4] first cut of {FIRST_SPLIT_SAMPLE} forest trees (m={m}/{p}): ", end="")
     print(_top(forest_cuts))
-    for label, rho, s2 in (("bagging", bag_rho, bag_s2), ("forest ", rf_rho, rf_s2)):
-        floor = rho * s2 + (1 - rho) * s2 / n_estimators
+    print(
+        f"[Part 4] tree correlation, trees grown on {bag_corr.slice_rows:,}-row slices "
+        f"({CORRELATION_REPEATS} slicings):"
+    )
+    for label, corr in (("bagging", bag_corr), ("forest ", rf_corr)):
+        averaged = corr.variance_of_average(n_estimators)
         print(
-            f"[Part 4]   {label} tree correlation rho={rho:.2f}  one tree's variance "
-            f"sigma2={s2:,.0f}  -> average of {n_estimators}: {floor:,.0f} "
-            f"(sd {floor**0.5:.1f} EUR)"
+            f"[Part 4]   {label} rho={corr.rho:.3f} (sd {corr.rho_sd:.3f})  "
+            f"sigma2={corr.sigma2:,.0f}  -> {n_estimators} such trees averaged: "
+            f"{averaged:,.0f} (sd {averaged**0.5:.1f} EUR), never below rho*sigma2="
+            f"{corr.rho * corr.sigma2:,.0f}"
         )
     print(f"[Part 4] forest: train MAE={train_mae:.2f}  test MAE={test_mae:.2f}")
     print(f"[Part 4]   wrote {path}" + (" (+ PNG)" if args.charts else ""))
@@ -428,7 +495,7 @@ def run_part4(
             train_mae,
             test_mae,
             test_r2,
-            note=f"tree correlation {bag_rho:.2f} -> {rf_rho:.2f}",
+            note=f"tree correlation {bag_corr.rho:.2f} -> {rf_corr.rho:.2f}",
         ),
         forest,
     )
@@ -592,11 +659,11 @@ def run_part7(
         model.fit(split.X_train, split.y_train)
         train_mae = modeling.mae(split.y_train, model.predict(split.X_train))
         test_mae, test_r2 = modeling.score(model, split.X_test, split.y_test)
-        print(
-            f"[Part 7] {label} loss, validation MAE by round: 1 -> {val[0]:.1f}, "
-            f"10 -> {val[9]:.1f}, 100 -> {val[99]:.1f}, {rounds} -> {val[rounds - 1]:.2f} (best), "
-            f"{max_iter} -> {val[-1]:.2f}"
+        shown = sorted({r for r in (1, 10, 100) if r <= max_iter} | {rounds, max_iter})
+        milestones = ", ".join(
+            f"{r} -> {val[r - 1]:.2f}" + (" (best)" if r == rounds else "") for r in shown
         )
+        print(f"[Part 7] {label} loss, validation MAE by round: {milestones}")
         print(
             f"[Part 7]   refit with {rounds} rounds: train MAE={train_mae:.2f}  "
             f"test MAE={test_mae:.2f}"
@@ -676,6 +743,11 @@ def run_part8(
     variables, disease progression one year later), where the signal is close to additive and
     linear. The ranking flips: what wins depends on whether a method's assumptions match the
     data, not on how sophisticated it is. Writes ``part8_nfl.csv``.
+
+    Each method runs one fixed recipe on both datasets (boosting stops early on its own instead
+    of Part 7's tuned rounds) and is scored by cross-validation over every row, test rows
+    included. Its numbers rank the methods against each other; they are not comparable with the
+    held-out test MAE of Parts 1-7, so the summary row leaves that column blank.
     """
     X, y = modeling.make_xy(listings)
     rome = _leaderboard(lineup(modeling.NUMERIC, modeling.CATEGORICAL, seed=seed), X, y, seed)
@@ -702,10 +774,10 @@ def run_part8(
         8,
         f"no free lunch ({CV_FOLDS}-fold CV)",
         None,
-        float(rome_best["cv_mae"]),
         None,
-        note=f"Rome #1 {rome_best['model']} (OLS #{_rank_of(rome, 'OLS')}); "
-        f"diabetes #1 {other_best['model']} "
+        None,
+        note=f"CV MAE, fixed recipes. Rome #1 {rome_best['model']} {rome_best['cv_mae']:.2f} "
+        f"(OLS #{_rank_of(rome, 'OLS')}); diabetes #1 {other_best['model']} "
         f"({rome_best['model']} #{_rank_of(other, str(rome_best['model']))})",
     )
 
@@ -762,6 +834,10 @@ def _plot_bars(
 def main(argv: list[str] | None = None) -> list[modeling.PartResult]:
     """Load once, carve one fixed split, run Parts 1->8 and print the summary table."""
     args = parse_cli(argv)
+    # The manifest certifies a finished run. Removing it first means a crash leaves part CSVs
+    # behind with no manifest, so nothing downstream can mistake them for a complete run.
+    manifest = args.output_dir / "arc_run.json"
+    manifest.unlink(missing_ok=True)
     print(f"Loading {args.listings} ...")
     listings = modeling.load_listings(args.listings)
     print(
@@ -786,12 +862,19 @@ def main(argv: list[str] | None = None) -> list[modeling.PartResult]:
     print(modeling.format_report(results))
     _write(pd.DataFrame([asdict(r) for r in results]), args, "arc_summary.csv")
     run = {
-        "listings": str(args.listings),
+        "listings": Path(args.listings).name,
+        "snapshot_sha256": modeling.file_sha256(args.listings),
         "n_listings": len(listings),
         "seed": args.seed,
         "test_size": args.test_size,
+        "bagged_trees": modeling.N_BAGGED_TREES,
+        "forest_trees": modeling.N_FOREST_TREES,
+        # A finished run has rewritten every CSV it produces, so each one here is this run's.
+        "outputs": {
+            csv.name: modeling.file_sha256(csv) for csv in sorted(args.output_dir.glob("*.csv"))
+        },
     }
-    (args.output_dir / "arc_run.json").write_text(json.dumps(run, indent=2) + "\n")
+    manifest.write_text(json.dumps(run, indent=2) + "\n")
     return results
 
 

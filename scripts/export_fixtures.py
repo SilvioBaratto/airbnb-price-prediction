@@ -1,11 +1,11 @@
 """Export compact JSON fixtures for the neuroespresso «Costruiamo l'algoritmo di Airbnb» videos.
 
 Every number a video shows traces back to a real run. The curves and the summary table come from
-what ``airbnb run-arc`` wrote to ``output/``, checked against the seed and snapshot recorded in
-``arc_run.json``. The per-scene details (the depth-3 tree, fifty trees' verdicts on one listing,
-which trees never saw a listing, the residuals shrinking round by round) are recomputed here with
-the arc's own pipelines and seed, so they come from the same models the arc measured. Nothing is
-hand-typed.
+what ``airbnb run-arc`` wrote to ``output/``, used only when its manifest ``arc_run.json``
+matches this export exactly: same snapshot (by SHA-256), seed, split and ensemble sizes. The
+per-scene details (the depth-3 tree, fifty trees' verdicts on one listing, which trees never
+saw a listing, the residuals shrinking round by round) are recomputed here with the arc's own
+pipelines and seed, so they come from the same models the arc measured. Nothing is hand-typed.
 
 One JSON per scene family, keys in Italian camelCase like the Uber fixtures, each with a
 ``fonte`` block saying where its numbers come from.
@@ -36,10 +36,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Runnable as a plain script from a checkout, without `pip install -e .` first.
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from airbnb import paths
 from airbnb.application.pricing import PricingService
 from airbnb.domain import config, geo
 from airbnb.domain.entities import ListingRequest
-from airbnb.infrastructure import paths
 from airbnb.infrastructure.predictors import ModelPredictor
 from airbnb.infrastructure.repositories import (
     CsvListingRepository,
@@ -58,6 +58,9 @@ BOOTSTRAP_DRAWS = 3
 RESIDUAL_ROUNDS = (1, 2, 3, 5, 10, 25, 50, 100)
 CURVE_POINTS = 80  # the boosting curve has 3,000 rounds; log-spaced samples keep its shape
 SHUFFLE_ROWS = 8
+# Thresholds sit halfway between data values (1.7345 between 1.734 and 1.735); shipping values
+# and thresholds at one shared precision keeps "value <= threshold" deciding as the tree did.
+TREE_DECIMALS = 6
 # The README's example, so the project video and the repo show the same quote.
 EXAMPLE = {
     "luogo": "Trastevere",
@@ -70,7 +73,7 @@ EXAMPLE = {
 
 
 class ArcOutputMissing(Exception):
-    """An ``airbnb run-arc`` artefact is missing, or comes from another seed or snapshot."""
+    """An ``airbnb run-arc`` artefact is missing, or belongs to a run this export cannot match."""
 
 
 def _num(x: Any, nd: int = 2) -> float | None:
@@ -78,6 +81,13 @@ def _num(x: Any, nd: int = 2) -> float | None:
     if x is None or pd.isna(x):
         return None
     return round(float(x), nd)
+
+
+def _sig(x: Any, digits: int = 4) -> float | None:
+    """Round ``x`` to significant digits, for values spanning many orders of magnitude."""
+    if x is None or pd.isna(x):
+        return None
+    return float(f"{float(x):.{digits}g}")
 
 
 def _cell(x: Any) -> float | str | None:
@@ -104,6 +114,7 @@ class Contesto:
     listings: pd.DataFrame
     split: pipeline.Split
     seed: int
+    test_size: float
     arc_dir: Path
     listings_path: Path
     places_path: Path
@@ -112,7 +123,9 @@ class Contesto:
         """Return the provenance block every fixture starts with."""
         return {
             "dati": DATI,
+            "snapshot": self.digest[:12],
             "seme": self.seed,
+            "testSize": self.test_size,
             "nAnnunci": len(self.listings),
             "nTrain": len(self.split.y_train),
             "nTest": len(self.split.y_test),
@@ -124,40 +137,70 @@ class Contesto:
         return np.random.default_rng(self.seed)
 
     @cached_property
+    def digest(self) -> str:
+        """The SHA-256 of the snapshot this export reads."""
+        return pipeline.file_sha256(self.listings_path)
+
+    @cached_property
     def arc_run(self) -> dict[str, Any]:
-        """Return ``arc_run.json``, refusing a run made with another seed or snapshot.
+        """Return the arc's manifest, refusing any run this export would not reproduce.
+
+        The fixtures quote the arc's CSVs next to numbers recomputed here, so both must come
+        from the same snapshot, seed, split and ensemble sizes; anything else would mix two runs.
+        A manifest without a field (written by an older arc) fails the comparison too.
 
         Raises:
-            ArcOutputMissing: if the file is absent or describes a different run.
+            ArcOutputMissing: if the manifest is absent or any recorded setting differs.
         """
         path = self.arc_dir / "arc_run.json"
         if not path.exists():
-            raise ArcOutputMissing(f"{path} missing")
+            raise ArcOutputMissing(f"{path} missing (no finished arc run)")
         run = json.loads(path.read_text())
-        if run["seed"] != self.seed or run["n_listings"] != len(self.listings):
-            raise ArcOutputMissing(
-                f"{path} is from seed {run['seed']} on {run['n_listings']:,} listings, "
-                f"not seed {self.seed} on {len(self.listings):,}"
-            )
+        expected = {
+            "snapshot_sha256": self.digest,
+            "seed": self.seed,
+            "test_size": self.test_size,
+            "bagged_trees": pipeline.N_BAGGED_TREES,
+            "forest_trees": pipeline.N_FOREST_TREES,
+        }
+        differences = [
+            f"{key} {run.get(key)!r} != {value!r}"
+            for key, value in expected.items()
+            if run.get(key) != value
+        ]
+        if differences:
+            raise ArcOutputMissing(f"{path} is from another run: {'; '.join(differences)}")
         return run
 
     def arc_csv(self, name: str) -> pd.DataFrame:
-        """Read one of the arc's CSVs, after checking the run it belongs to.
+        """Read one of the arc's CSVs, after checking it is the one the manifest's run wrote.
 
         Raises:
-            ArcOutputMissing: if the run is stale or the CSV is absent.
+            ArcOutputMissing: if the run is stale, or the CSV is absent, unrecorded or altered.
         """
-        self.arc_run  # noqa: B018  (validates the run before trusting its CSVs)
+        recorded = self.arc_run.get("outputs", {}).get(name)
         path = self.arc_dir / name
         if not path.exists():
             raise ArcOutputMissing(f"{path} missing")
+        if recorded is None:
+            raise ArcOutputMissing(f"{path} is not among the run's recorded outputs")
+        if pipeline.file_sha256(path) != recorded:
+            raise ArcOutputMissing(f"{path} changed after the run that wrote it")
         return pd.read_csv(path)
 
     def arc_mae(self, part: int, contains: str = "") -> float:
-        """Return the test MAE the arc reported for ``part``, on the row naming ``contains``."""
+        """Return the test MAE the arc reported for ``part``, on the row naming ``contains``.
+
+        Raises:
+            ValueError: unless exactly one row of ``part`` has ``contains`` in its name, so a
+                renamed arc row fails loudly instead of quoting its neighbour.
+        """
         summary = self.arc_csv("arc_summary.csv")
-        row = summary[(summary["part"] == part) & summary["name"].str.contains(contains)]
-        return float(row["mae_test"].iloc[0])
+        names = summary["name"].str.contains(contains, regex=False)
+        rows = summary[(summary["part"] == part) & names]
+        if len(rows) != 1:
+            raise ValueError(f"{len(rows)} arc rows of part {part} match {contains!r}")
+        return float(rows["mae_test"].iloc[0])
 
     @cached_property
     def train_frame(self) -> pd.DataFrame:
@@ -338,7 +381,7 @@ def fx_albero(ctx: Contesto) -> dict[str, Any]:
                 "id": node,
                 "profondita": depth_of[node],
                 "colonna": None if leaf else names[tree.feature[node]],
-                "soglia": None if leaf else _num(tree.threshold[node], 3),
+                "soglia": None if leaf else _num(tree.threshold[node], TREE_DECIMALS),
                 "annunci": int(tree.n_node_samples[node]),
                 "prezzoMedio": _num(tree.value[node].ravel()[0]),
                 "sinistra": None if leaf else int(tree.children_left[node]),
@@ -354,7 +397,7 @@ def fx_albero(ctx: Contesto) -> dict[str, Any]:
     paths_ = est.decision_path(Xd)
     righe = [
         {
-            "valori": {c: _num(Xd[i, names.index(c)]) for c in used},
+            "valori": {c: _num(Xd[i, names.index(c)], TREE_DECIMALS) for c in used},
             "prezzo": _num(s.y_test[r]),
             "percorso": [int(n) for n in paths_.indices[paths_.indptr[i] : paths_.indptr[i + 1]]],
             "stima": _num(tree.value[est.apply(Xd[i : i + 1])[0]].ravel()[0]),
@@ -381,7 +424,7 @@ def fx_potatura(ctx: Contesto) -> dict[str, Any]:
 
     def _point(r: Any) -> dict[str, Any]:
         return {
-            "alpha": _num(r["alpha"], 4),
+            "alpha": _sig(r["alpha"]),
             "foglie": int(r["leaves"]),
             "maeCv": _num(r["cv_mae"]),
             "maeTrain": _num(r["train_mae"]),
@@ -461,13 +504,16 @@ def fx_foresta(ctx: Contesto) -> dict[str, Any]:
     b = len(ctx.forest.named_steps["est"].estimators_)
 
     def _correlation(make: Callable[[int, int], Any]) -> dict[str, Any]:
-        rho, sigma2 = arc.tree_correlation(s, make, seed=ctx.seed)
-        floor = rho * sigma2 + (1 - rho) * sigma2 / b
+        corr = arc.tree_correlation(s, make, seed=ctx.seed)
+        averaged = corr.variance_of_average(b)
         return {
-            "rho": _num(rho, 3),
-            "sigma2": _num(sigma2, 0),
-            "varianzaMedia": _num(floor, 0),
-            "sdMedia": _num(floor**0.5, 1),
+            "rho": _num(corr.rho, 3),
+            "rhoSd": _num(corr.rho_sd, 3),
+            "sigma2": _num(corr.sigma2, 0),
+            "righePerAlbero": corr.slice_rows,
+            "varianzaMedia": _num(averaged, 0),
+            "sdMedia": _num(averaged**0.5, 1),
+            "pavimento": _num(corr.rho * corr.sigma2, 0),
         }
 
     curve = ctx.arc_csv("part4_mtry.csv")
@@ -476,6 +522,7 @@ def fx_foresta(ctx: Contesto) -> dict[str, Any]:
             alberiConfrontati=n_cuts,
             insiemiDisgiunti=arc.CORRELATION_SETS,
             alberiPerInsieme=arc.CORRELATION_TREES,
+            ripetizioni=arc.CORRELATION_REPEATS,
             curva="output/part4_mtry.csv",
         ),
         "primoTaglio": {"bagging": bag_cuts, "foresta": forest_cuts},
@@ -705,7 +752,8 @@ FIXTURES: dict[str, Callable[[Contesto], Any]] = {
 def write_json(out_dir: Path, name: str, obj: object) -> Path:
     """Write ``obj`` as compact JSON to ``out_dir/name``, report its size, and return the path."""
     path = out_dir / name
-    path.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+    # NaN and Infinity are not JSON: the browser's JSON.parse would reject the whole file.
+    path.write_text(json.dumps(obj, ensure_ascii=False, separators=(",", ":"), allow_nan=False))
     print(f"  {name:<20} {path.stat().st_size / 1024:6.1f} KB")
     return path
 
@@ -740,13 +788,20 @@ def main(argv: list[str] | None = None) -> dict[str, Path]:
     parser.add_argument(
         "--seed", type=int, default=config.SEED, help="the arc's seed (default: %(default)s)"
     )
+    parser.add_argument(
+        "--test-size",
+        type=float,
+        default=0.2,
+        help="the arc's held-out fraction (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     listings = pipeline.load_listings(args.listings)
     ctx = Contesto(
         listings=listings,
-        split=pipeline.make_split(listings, seed=args.seed),
+        split=pipeline.make_split(listings, test_size=args.test_size, seed=args.seed),
         seed=args.seed,
+        test_size=args.test_size,
         arc_dir=args.arc_dir,
         listings_path=args.listings,
         places_path=args.places,

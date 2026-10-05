@@ -12,6 +12,7 @@ a night" is the sentence a host understands.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,8 +33,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.tree import DecisionTreeRegressor
 
+from airbnb import paths
 from airbnb.domain import config
-from airbnb.infrastructure import paths
 
 SEED = config.SEED
 TARGET = config.TARGET
@@ -82,6 +83,11 @@ def load_listings(path: Path | str = paths.LISTINGS_CSV) -> pd.DataFrame:
     """Read the cleaned snapshot, keeping the features and the target in contract order."""
     frame = pd.read_csv(path, usecols=FEATURES + [TARGET], dtype=_DTYPES)
     return cast(pd.DataFrame, frame[FEATURES + [TARGET]])
+
+
+def file_sha256(path: Path | str) -> str:
+    """Return the SHA-256 of a file's bytes: the identity of a snapshot or of a run's output."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def make_xy(listings: pd.DataFrame) -> tuple[pd.DataFrame, np.ndarray]:

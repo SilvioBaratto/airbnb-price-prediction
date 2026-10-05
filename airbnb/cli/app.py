@@ -21,7 +21,7 @@ import argparse
 from collections.abc import Callable
 from pathlib import Path
 
-from airbnb.infrastructure import paths
+from airbnb import paths
 
 
 def _handle_fetch_data(args: argparse.Namespace) -> int:

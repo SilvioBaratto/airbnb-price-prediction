@@ -15,9 +15,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from airbnb import paths
 from airbnb.domain import geo
 from airbnb.domain.entities import Comparable, ListingRequest, Place
-from airbnb.infrastructure import paths
 
 # Enough listings to outvote a stray one across a municipio border, few enough (~250 m in the
 # centre) to stay local.

@@ -31,7 +31,7 @@ Every change earns a test. The loop we follow for each task:
 5. **Commit** — one focused commit per logical change.
 
 ```bash
-pytest -q              # full suite (~20 s, never touches the network or the real snapshot)
+pytest -q              # full suite (~40 s, never touches the network or the real snapshot)
 ruff check . && ruff format --check .
 pyright                # informational; a known pandas/numpy stub baseline is tolerated
 ```
@@ -39,23 +39,30 @@ pyright                # informational; a known pandas/numpy stub baseline is to
 ## Architecture: the dependency rule
 
 The package is organized in clean-architecture layers; **dependencies always
-point inward** and inner layers never import outer ones:
+point inward**, inner layers never import outer ones, and no two layers import
+each other:
 
 ```
 cli  ->  application  ->  domain
- \                         ^
-  \--> infrastructure -----/   (implements the application ports)
-datasource, modeling  ->  domain + infrastructure   (supporting feature packages)
+ |                         ^
+ +--> infrastructure  ->  modeling  ->  domain   (adapters implement the ports;
+ |                                                the predictors wrap the arc's pipelines)
+ +--> datasource  ->  domain
 ```
 
 - `domain/` — pure rules and value objects (config, geo, entities). No I/O, no framework.
 - `application/` — the pricing use case + ports (Protocols). Depends only on `domain`.
-- `infrastructure/` — adapters (CSV repositories, predictors, paths) that implement
-  the ports and do the I/O.
+- `modeling/` — the arc and its pipelines. Depends only on `domain`.
+- `infrastructure/` — adapters (CSV repositories, predictors) that implement the
+  ports and do the I/O.
 - `cli/` — the terminal entry points and the composition root that wires it all up.
+- `paths.py` — where files live. A leaf that imports nothing from the package, so
+  every layer that touches the disk can read it without creating a cycle.
 
 The rule is not a convention: `tests/test_layering.py` parses every module's
-imports and fails the build on a forbidden one.
+imports (absolute, relative or `from airbnb import x`) and fails the build on a
+forbidden one, or if the allowed graph itself would let two layers import each
+other.
 
 When adding a capability, put pure logic in `domain`, an interface in
 `application/ports.py`, and the concrete adapter in `infrastructure`.

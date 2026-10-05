@@ -59,7 +59,7 @@ needs the network. `airbnb fetch-data` rebuilds it from the upstream dump.
 ### Train once, then serve fast
 
 `airbnb train` fits three gradient-boosting models (the suggested price, and the 10th and 90th
-percentile that bound the band) and saves them to `models/price_model.joblib` (~0.7 MB).
+percentile that bound the band) and saves them to `models/price_model.joblib` (~1 MB).
 `airbnb simulate --model <path>` loads them instantly. Without `--model`, or if the file is
 missing, the simulator trains on launch, which takes a couple of seconds on the snapshot. The
 weights are not committed: joblib files are tied to the scikit-learn version that wrote them.
@@ -80,26 +80,33 @@ Each price comes from a fitted model — never from a hand-written rule.
 
 ## Architecture
 
-The code follows **clean architecture**: dependencies point inward and inner layers never
-import outer ones. The pure rules sit at the center; I/O and the CLI live at the edges and are
-wired together only in the composition root (`airbnb/cli/app.py`). `tests/test_layering.py`
-parses every import and fails the build if the rule is broken.
+The code follows **clean architecture**: dependencies point inward, inner layers never import
+outer ones, and no two layers import each other. The pure rules sit at the center; I/O and the
+CLI live at the edges and are wired together only in the composition root
+(`airbnb/cli/app.py`). `tests/test_layering.py` parses every import (absolute, relative or
+`from airbnb import x`) and fails the build if a layer imports one it may not.
 
 ```
         cli  ─────────▶  application  ─────────▶  domain
    (entry points,     (use case + ports,       (config, geo,
     composition)         Protocols)             entities)
-        │                    ▲
-        │                    │ implements ports
-        └────────▶  infrastructure  (CSV repositories, predictors, paths)
-                             ▲
-     datasource ─────────────┘   modeling ─────▶  domain + infrastructure
-   (download + clean the dump)  (the ML arc — supporting feature packages)
+        │                    ▲                     ▲
+        │                    │ implements ports    │
+        ├────────▶  infrastructure  ─────────▶  modeling
+        │        (CSV repositories,          (the ML arc: pipelines,
+        │         predictors)                 the eight parts)
+        └────────▶  datasource  ──────────────────▶  domain
+                 (download + clean the dump)
 ```
+
+`airbnb/paths.py`, the one place that knows where files live, is a leaf: it imports nothing
+from the package, so modeling, datasource, infrastructure and the CLI can all read it without
+any of them depending on another.
 
 ```
 airbnb/
   __main__.py               python -m airbnb -> cli.app.main()
+  paths.py                  where every file lives, the upstream URL (a leaf)
   domain/
     config.py               the problem: city, price slice, feature contract, seed
     geo.py                  haversine distance, distance from the centre
@@ -108,7 +115,6 @@ airbnb/
     ports.py                Protocols: PlaceRepository, ListingRepository, PricePredictor
     pricing.py              PricingService.quote(request) -> PriceQuote, .comparables(request)
   infrastructure/
-    paths.py                where every file lives, the upstream URL
     repositories.py         CsvPlaceRepository, CsvListingRepository
     predictors.py           ModelPredictor (three boosters, save/load), MedianPredictor
   datasource/
@@ -164,7 +170,7 @@ number below is printed by `airbnb run-arc` — never typed by hand.
 | 1 | **regression tree (CART)**: the first cut is `bathrooms ≤ 1.75`; three levels, 8 leaves | 61.14 € |
 | 2 | grown to 24,846 leaves it memorizes (train 0.00, test 67.19); **cost-complexity pruning** with α by 5-fold CV keeps 132 | 54.14 € |
 | 3 | **bagging**: 200 trees on bootstrap resamples (each holds 63.2% of the listings); a lone tree scores 68.07 | 47.78 € |
-| 4 | **random forest** (11 of 33 columns per split): the 50 bagged trees all open on `bathrooms`, the forest's open on seven different ones; tree correlation ρ 0.06 → 0.03 | 46.66 € |
+| 4 | **random forest** (11 of 33 columns per split): the 50 bagged trees all open on `bathrooms`, the forest's open on seven different ones; the correlation ρ between two trees grown on the same data falls from 0.083 to 0.046 (trees grown on 5,099-row slices; spread over four slicings ±0.003 and ±0.001) | 46.66 € |
 | 5 | **out-of-bag error**: each listing graded by the 36.8% of trees that never saw it — OOB 47.23 vs test 46.66, no test set needed | — |
 | 6 | **permutation importance** (OOB): shuffling `km_to_center` costs +21.06 €, `bathroom_shared` +0.22 €; split-gain ranks `bathrooms` first instead | — |
 | 7 | **gradient boosting**, 8-leaf trees on the residuals: best at 398 rounds, worse by 3,000 (validation 48.62 → 50.00); with **absolute loss** | 46.65 € → **44.81 €** |
@@ -178,16 +184,21 @@ is best depends on whether its assumptions match the data, not on how sophistica
 
 Every part writes its curve to `output/` (`part2_pruning.csv` … `part8_nfl.csv`); `--charts`
 adds a PNG next to each. The summary table lands in `output/arc_summary.csv`, and
-`output/arc_run.json` records the seed and snapshot it came from.
+`output/arc_run.json` is the manifest of the finished run: the snapshot's SHA-256, the seed, the
+split, the ensemble sizes and the SHA-256 of every CSV the run wrote. It is deleted when a run starts and written when it ends, so a run
+that crashes halfway leaves no manifest behind.
 
 ### Fixtures for the videos
 
 `scripts/export_fixtures.py` turns a run of the arc into the small JSON files the neuroespresso
 videos animate (videocraft, data key `airbnb_prezzi`): one per scene family, from the depth-3
 tree node by node to fifty trees' verdicts on one listing and the residuals shrinking round by
-round. Curves and headline numbers are read from the arc's output, after checking its seed
-and snapshot match; per-scene details are recomputed with the arc's own pipelines and seed.
-Nothing is typed by hand.
+round. Curves and headline numbers are read from the arc's output only when its manifest
+matches the export exactly (same snapshot by SHA-256, seed, split and ensemble sizes) and each
+CSV is byte-for-byte the one that run wrote; otherwise
+those fixtures are skipped with the reason. Per-scene details are recomputed with the arc's own
+pipelines and seed. Nothing is typed by hand. Every fixture's `fonte` block names the snapshot
+digest, seed and split it came from.
 
 ```bash
 airbnb run-arc                                   # once
@@ -262,7 +273,7 @@ snapshot is one `airbnb fetch-data` away; unit tests and CI guard everything.
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                            # the full test suite (~20 s)
+pytest -q                            # the full test suite (~40 s)
 ruff check . && ruff format --check .
 pyright                              # informational; a known pandas/numpy stub baseline is tolerated
 ```

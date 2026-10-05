@@ -26,8 +26,8 @@ from typing import cast
 import numpy as np
 import pandas as pd
 
+from airbnb import paths
 from airbnb.domain import config, geo
-from airbnb.infrastructure import paths
 
 # Upstream columns the cleaning step reads; everything else (host data included) is never loaded.
 RAW_COLUMNS = [
