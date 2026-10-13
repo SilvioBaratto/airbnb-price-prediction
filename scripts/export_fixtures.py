@@ -620,10 +620,12 @@ def fx_boosting(ctx: Contesto) -> dict[str, Any]:
     best = {label: int(curve[f"val_mae_{label}"].idxmin()) + 1 for label in ("squared", "absolute")}
     model = pipeline.boosting_pipeline(max_iter=best["squared"], seed=ctx.seed)
     model.fit(s.X_train, s.y_train)
-    staged = list(model.named_steps["est"].staged_predict(pipeline.design(model, s.X_test)))
+    booster = model.named_steps["est"]
+    design = pipeline.design(model, s.X_test)
     order = np.argsort(s.y_test)
     chosen = [int(order[int(q * (len(order) - 1))]) for q in (0.1, 0.3, 0.5, 0.7, 0.9)]
     rounds = [r for r in RESIDUAL_ROUNDS if r < best["squared"]] + [best["squared"]]
+    staged = {r: booster.predict(design, iteration_range=(0, r)) for r in rounds}
 
     def _migliore(label: str, name: str) -> dict[str, Any]:
         return {
@@ -658,34 +660,10 @@ def fx_boosting(ctx: Contesto) -> dict[str, Any]:
                 "annuncio": _listing(s.X_test.iloc[i]),
                 "prezzoVero": _num(s.y_test[i]),
                 "stime": [{"alberi": 0, "stima": _num(s.y_train.mean())}]
-                + [{"alberi": r, "stima": _num(staged[r - 1][i])} for r in rounds],
+                + [{"alberi": r, "stima": _num(staged[r][i])} for r in rounds],
             }
             for i in chosen
         ],
-    }
-
-
-# --- Part 8 — no method always wins -----------------------------------------------------
-def fx_nfl(ctx: Contesto) -> dict[str, Any]:
-    """The same eight methods ranked on Rome and on the diabetes study."""
-    board = ctx.arc_csv("part8_nfl.csv")
-
-    def _ranking(dataset: str) -> list[dict[str, Any]]:
-        rows = board[board["dataset"] == dataset].sort_values("rank")
-        return [
-            {"posto": int(r.rank), "modello": str(r.model), "maeCv": _num(r.cv_mae)}
-            for r in rows.itertuples(index=False)
-        ]
-
-    return {
-        "fonte": ctx.fonte(tabella="output/part8_nfl.csv", foldCv=arc.CV_FOLDS),
-        "roma": {"unita": "euro a notte", "classifica": _ranking("airbnb_rome")},
-        "diabete": {
-            "unita": "punti della scala di progressione",
-            "descrizione": "442 pazienti, 10 variabili, progressione della malattia dopo un anno "
-            "(Efron et al., 2004; incluso in scikit-learn)",
-            "classifica": _ranking("diabetes"),
-        },
     }
 
 
@@ -744,7 +722,6 @@ FIXTURES: dict[str, Callable[[Contesto], Any]] = {
     "oob.json": fx_oob,
     "importanza.json": fx_importanza,
     "boosting.json": fx_boosting,
-    "nfl.json": fx_nfl,
     "simulatore.json": fx_simulatore,
 }
 

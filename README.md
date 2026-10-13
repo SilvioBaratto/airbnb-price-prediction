@@ -9,7 +9,7 @@
 Companion project to the series **"Let's Build Airbnb's Algorithm"** (neuroespresso).
 Predict what a listing in **Rome** should charge per night, from **31,870 real listings**
 (Inside Airbnb), climbing from one decision tree to random forests and gradient boosting in
-eight parts, and price your own listing from the terminal.
+seven parts, and price your own listing from the terminal.
 
 > Simplified for teaching: this is not Airbnb's Smart Pricing, which also sees demand,
 > seasonality and the calendar. It is the core idea — learn a nightly price from what similar
@@ -25,7 +25,7 @@ Beds [1]:
 Bathrooms [1]:
 
 Trastevere · Entire home/apt · 2 guests · 1 bedroom · 1 bed · 1 bathroom
-Suggested price: €193 a night (80% of similar listings ask €141 – €279)
+Suggested price: €199 a night (80% of similar listings ask €138 – €292)
 
 The nearest real listings like it:
 Distance  Guests  Bedrooms  Baths  Price  Listing id
@@ -47,7 +47,7 @@ python -m venv .venv
 source .venv/bin/activate            # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-airbnb run-arc --charts              # the eight parts on the committed snapshot (~2 min)
+airbnb run-arc --charts              # the seven parts on the committed snapshot (~2 min)
 airbnb train                         # fit the price models once, save them to models/
 airbnb simulate --model models/price_model.joblib   # price a listing interactively
 ```
@@ -62,7 +62,9 @@ needs the network. `airbnb fetch-data` rebuilds it from the upstream dump.
 percentile that bound the band) and saves them to `models/price_model.joblib` (~1 MB).
 `airbnb simulate --model <path>` loads them instantly. Without `--model`, or if the file is
 missing, the simulator trains on launch, which takes a couple of seconds on the snapshot. The
-weights are not committed: joblib files are tied to the scikit-learn version that wrote them.
+weights are not committed: a joblib file is tied to the scikit-learn and XGBoost versions that
+wrote it, and unpickling one runs the code it carries — only load a file you produced yourself
+with `airbnb train`.
 
 ## How it works
 
@@ -94,7 +96,7 @@ CLI live at the edges and are wired together only in the composition root
         │                    │ implements ports    │
         ├────────▶  infrastructure  ─────────▶  modeling
         │        (CSV repositories,          (the ML arc: pipelines,
-        │         predictors)                 the eight parts)
+        │         predictors)                 the seven parts)
         └────────▶  datasource  ──────────────────▶  domain
                  (download + clean the dump)
 ```
@@ -122,7 +124,7 @@ airbnb/
   modeling/
     pipeline.py             loading, the fixed split, preprocessing, model pipelines, metrics,
                             per-tree and out-of-bag helpers, the report
-    arc.py                  the eight parts + orchestration
+    arc.py                  the seven parts + orchestration
   cli/
     app.py                  the `airbnb` CLI (fetch-data | run-arc | train | simulate)
     simulator.py            the interactive loop
@@ -168,21 +170,19 @@ number below is printed by `airbnb run-arc` — never typed by hand.
 |---|---|---:|
 | — | always answer the mean (200.52 €) | **87.13 €** |
 | 1 | **regression tree (CART)**: the first cut is `bathrooms ≤ 1.75`; three levels, 8 leaves | 61.14 € |
-| 2 | grown to 24,846 leaves it memorizes (train 0.00, test 67.19); **cost-complexity pruning** with α by 5-fold CV keeps 132 | 54.14 € |
-| 3 | **bagging**: 200 trees on bootstrap resamples (each holds 63.2% of the listings); a lone tree scores 68.07 | 47.78 € |
-| 4 | **random forest** (11 of 33 columns per split): the 50 bagged trees all open on `bathrooms`, the forest's open on seven different ones; the correlation ρ between two trees grown on the same data falls from 0.083 to 0.046 (trees grown on 5,099-row slices; spread over four slicings ±0.003 and ±0.001) | 46.66 € |
-| 5 | **out-of-bag error**: each listing graded by the 36.8% of trees that never saw it — OOB 47.23 vs test 46.66, no test set needed | — |
-| 6 | **permutation importance** (OOB): shuffling `km_to_center` costs +21.06 €, `bathroom_shared` +0.22 €; split-gain ranks `bathrooms` first instead | — |
-| 7 | **gradient boosting**, 8-leaf trees on the residuals: best at 398 rounds, worse by 3,000 (validation 48.62 → 50.00); with **absolute loss** | 46.65 € → **44.81 €** |
-| 8 | **no free lunch**: the same 8 methods by 5-fold CV — Rome: boosting 1st, OLS 7th; scikit-learn's *diabetes* data: OLS 1st, boosting 3rd | — |
+| 2 | grown to 24,840 leaves it memorizes (train 0.00, test 66.68); **cost-complexity pruning** with α by 5-fold CV keeps 132 | 54.40 € |
+| 3 | **bagging**: 200 trees on bootstrap resamples (each holds 63.2% of the listings); a lone tree scores 68.08 | 47.80 € |
+| 4 | **random forest** (11 of 33 columns per split): the 50 bagged trees all open on `bathrooms`, the forest's spread across `accommodates`, `bathrooms`, `bedrooms` and others; the correlation ρ between two trees grown on the same data falls from 0.083 to 0.047 (trees grown on 5,099-row slices; spread over four slicings ±0.003 and ±0.001) | 46.65 € |
+| 5 | **out-of-bag error**: each listing graded by the 36.8% of trees that never saw it — OOB 47.32 vs test 46.65, no test set needed | — |
+| 6 | **permutation importance** (OOB): shuffling `km_to_center` costs +20.97 €, `bathroom_shared` +0.21 €; split-gain ranks `bathrooms` first instead | — |
+| 7 | **gradient boosting** (XGBoost), 8-leaf trees on the residuals: best at 564 rounds, worse by 3,000 (validation 48.51 → 49.07); with **absolute loss** | 46.58 € → **44.85 €** |
 
-Part 8 brings back the previous series' methods (kNN, OLS, Lasso) and ranks everything on two
-datasets. On Rome's prices, which depend on thresholds and interactions (a second bathroom
-matters, distance matters more in the centre), trees win. On diabetes progression, which is
-close to additive and linear, the straight line wins and boosting drops to third. Which method
-is best depends on whether its assumptions match the data, not on how sophisticated it is.
+Rome's prices turn on thresholds and interactions — a second bathroom matters, distance matters
+more in the centre — which is what trees capture by cutting the table, random forests steady by
+averaging decorrelated trees, and boosting sharpens by fitting the residuals of short trees down
+to the final **44.85 €**.
 
-Every part writes its curve to `output/` (`part2_pruning.csv` … `part8_nfl.csv`); `--charts`
+Every part writes its curve to `output/` (`part2_pruning.csv` … `part7_boosting.csv`); `--charts`
 adds a PNG next to each. The summary table lands in `output/arc_summary.csv`, and
 `output/arc_run.json` is the manifest of the finished run: the snapshot's SHA-256, the seed, the
 split, the ensemble sizes and the SHA-256 of every CSV the run wrote. It is deleted when a run starts and written when it ends, so a run
@@ -218,7 +218,6 @@ python scripts/export_fixtures.py --out-dir <videocraft>/public/fixtures/airbnb_
 | `oob.json` | Part 5: which trees never drew one listing, and their verdict |
 | `importanza.json` | Part 6: the permutation-importance ranking, a shuffled column |
 | `boosting.json` | Part 7: error vs rounds, residuals of five listings round by round |
-| `nfl.json` | Part 8: the two leaderboards |
 | `simulatore.json` | the README's Trastevere quote and its comparables |
 
 ## ML project checklist → where it lives in the code
@@ -246,9 +245,9 @@ and amenities; derive the distance from the centre; impute and one-hot inside th
 → `airbnb/datasource/insideairbnb.py` (`parse_price`, `parse_bathrooms`, `count_amenities`);
 `airbnb/modeling/pipeline.py` (`make_split` holds out the test set, `build_preprocessor`).
 
-**5. Shortlist promising models** — tree, pruned tree, bagging, forest, boosting, and the
-previous series' kNN/OLS/Lasso, compared on one split and by cross-validation.
-→ `airbnb/modeling/arc.py` `run_part1` … `run_part4`, `run_part7`, `run_part8` (`lineup`).
+**5. Shortlist promising models** — tree, pruned tree, bagging, forest and boosting, compared
+on the one held-out split as the error drops part by part.
+→ `airbnb/modeling/arc.py` `run_part1` … `run_part4`, `run_part7`.
 
 **6. Fine-tune the system** *(choices on training rows only; the test set is only scored)* —
 α by 5-fold CV, the number of boosting rounds on a validation slice, out-of-bag error as a free

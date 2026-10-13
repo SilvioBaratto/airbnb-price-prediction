@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from airbnb.domain import config
 from airbnb.modeling import pipeline
@@ -86,6 +87,12 @@ def test_boosting_quantile_pipeline_passes_the_quantile(split: pipeline.Split) -
     high.fit(split.X_train, split.y_train)
     low.fit(split.X_train, split.y_train)
     assert high.predict(split.X_test).mean() > low.predict(split.X_test).mean()
+
+
+def test_boosting_estimator_rejects_an_unknown_loss() -> None:
+    """An unrecognised loss (and no quantile) raises a clear ValueError, not a bare KeyError."""
+    with pytest.raises(ValueError, match="unknown loss"):
+        pipeline.boosting_estimator(loss="huber")
 
 
 def test_format_report_quotes_the_baseline_and_dashes_missing_metrics() -> None:

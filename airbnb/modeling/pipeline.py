@@ -1,4 +1,4 @@
-"""Shared helpers for the eight-part tree-ensemble arc (README "The model, part by part").
+"""Shared helpers for the seven-part tree-ensemble arc (README "The model, part by part").
 
 Single source of truth for loading the snapshot, the one fixed train/test split, the
 scikit-learn preprocessing and model pipelines, the metrics, the per-tree plumbing the ensemble
@@ -23,15 +23,14 @@ import pandas as pd
 from sklearn.base import RegressorMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyRegressor
-from sklearn.ensemble import BaggingRegressor, HistGradientBoostingRegressor, RandomForestRegressor
+from sklearn.ensemble import BaggingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LassoCV, LinearRegression
 from sklearn.metrics import mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsRegressor
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder
 from sklearn.tree import DecisionTreeRegressor
+from xgboost import XGBRegressor
 
 from airbnb import paths
 from airbnb.domain import config
@@ -49,6 +48,9 @@ FOREST_MAX_FEATURES = 1 / 3
 BOOSTING_LEARNING_RATE = 0.1
 # Short trees, as ESL recommends for boosting (4 <= J <= 8): each one only nudges the sum.
 BOOSTING_LEAVES = 8
+# Early stopping holds back a tenth of the rows and halts once this many rounds add no gain.
+BOOSTING_EARLY_STOPPING_ROUNDS = 20
+BOOSTING_VALIDATION_FRACTION = 0.1
 
 _DTYPES: dict[str, Any] = {
     **{c: "float64" for c in NUMERIC},
@@ -117,18 +119,14 @@ def make_split(listings: pd.DataFrame, *, test_size: float = 0.2, seed: int = SE
 def build_preprocessor(
     numeric: Sequence[str] = NUMERIC,
     categorical: Sequence[str] = CATEGORICAL,
-    *,
-    scale: bool = False,
 ) -> ColumnTransformer:
     """Median-impute the numeric columns and one-hot the categorical ones.
 
-    Trees are indifferent to scale, so ``scale`` is only for the distance- and
-    coefficient-based models of Part 8. Imputation sits inside the pipeline, fitted on the
-    training rows only, and is also what fills the columns a host leaves blank in the simulator.
+    The tree ensembles are indifferent to scale, so the numeric columns are only imputed.
+    Imputation sits inside the pipeline, fitted on the training rows only, and is also what
+    fills the columns a host leaves blank in the simulator.
     """
     numeric_steps: list[tuple[str, Any]] = [("impute", SimpleImputer(strategy="median"))]
-    if scale:
-        numeric_steps.append(("scale", StandardScaler()))
     transformers: list[tuple[str, Any, list[str]]] = [
         ("num", Pipeline(numeric_steps), list(numeric))
     ]
@@ -142,15 +140,13 @@ def make_pipeline(
     estimator: RegressorMixin,
     numeric: Sequence[str] = NUMERIC,
     categorical: Sequence[str] = CATEGORICAL,
-    *,
-    scale: bool = False,
 ) -> Pipeline:
     """``Pipeline([("pre", preprocessor), ("est", estimator)])``.
 
     The step names are load-bearing: the ensemble helpers reach the fitted trees through
     ``"est"`` and the transformed design through ``"pre"``.
     """
-    pre = build_preprocessor(numeric, categorical, scale=scale)
+    pre = build_preprocessor(numeric, categorical)
     return Pipeline([("pre", pre), ("est", estimator)])
 
 
@@ -205,6 +201,79 @@ def forest_pipeline(
     return make_pipeline(forest, numeric, categorical)
 
 
+class _EarlyStoppingXGB(XGBRegressor):
+    """An ``XGBRegressor`` that carves its own validation slice so it can stop early.
+
+    A scikit-learn pipeline hands the final estimator the already-transformed design, so the
+    rows XGBoost needs to watch for early stopping are split off here rather than passed in by
+    the caller. This keeps ``boosting_pipeline(...).fit(X, y)`` the same two-argument call as
+    every other model in the arc.
+    """
+
+    def fit(self, X: Any, y: Any) -> _EarlyStoppingXGB:
+        """Fit on a random nine tenths of the rows, watching the rest to decide when to stop.
+
+        Deliberately takes only ``X`` and ``y``: the arc never routes per-sample fit params
+        (``sample_weight`` and friends) through the pipeline, and accepting them here would
+        hand XGBoost arrays the internal split has already shortened.
+        """
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=float)
+        X_fit, X_val, y_fit, y_val = train_test_split(
+            X, y, test_size=BOOSTING_VALIDATION_FRACTION, random_state=self.random_state
+        )
+        super().fit(X_fit, y_fit, eval_set=[(X_val, y_val)], verbose=False)
+        return self
+
+
+def boosting_estimator(
+    *,
+    loss: str = "squared_error",
+    quantile: float | None = None,
+    max_iter: int = 1000,
+    learning_rate: float = BOOSTING_LEARNING_RATE,
+    max_leaf_nodes: int = BOOSTING_LEAVES,
+    eval_metric: str | None = None,
+    early_stopping: bool = False,
+    seed: int = SEED,
+) -> XGBRegressor:
+    """Build the unfitted XGBoost regressor the arc's boosting part and the simulator share.
+
+    With ``loss="squared_error"`` each tree fits the plain residuals; ``"absolute_error"`` fits
+    their sign, which is what minimizes the euro error a host sees; a ``quantile`` predicts the
+    price that a fraction ``q`` of similar listings stay under. ``max_leaf_nodes`` short trees
+    are grown leaf-wise (``grow_policy="lossguide"``). With ``early_stopping`` the estimator
+    sizes itself on a held-out slice (see :class:`_EarlyStoppingXGB`); without it the caller
+    fixes ``max_iter`` rounds, which is how the arc traces the error round by round. ``eval_metric``
+    overrides the metric XGBoost watches (the arc reads it off in euro as ``"mae"``).
+    """
+    objectives = {"squared_error": "reg:squarederror", "absolute_error": "reg:absoluteerror"}
+    params: dict[str, Any] = dict(
+        n_estimators=max_iter,
+        learning_rate=learning_rate,
+        max_leaves=max_leaf_nodes,
+        max_depth=0,
+        grow_policy="lossguide",
+        random_state=seed,
+        n_jobs=-1,
+    )
+    if eval_metric is not None:
+        params["eval_metric"] = eval_metric
+    if quantile is not None:
+        params["objective"] = "reg:quantileerror"
+        params["quantile_alpha"] = quantile
+    elif loss in objectives:
+        params["objective"] = objectives[loss]
+    else:
+        raise ValueError(
+            f"unknown loss {loss!r}; use 'squared_error' or 'absolute_error', "
+            "or pass quantile=<float> for a quantile model"
+        )
+    if early_stopping:
+        return _EarlyStoppingXGB(early_stopping_rounds=BOOSTING_EARLY_STOPPING_ROUNDS, **params)
+    return XGBRegressor(**params)
+
+
 def boosting_pipeline(
     numeric: Sequence[str] = NUMERIC,
     categorical: Sequence[str] = CATEGORICAL,
@@ -217,52 +286,66 @@ def boosting_pipeline(
     early_stopping: bool = False,
     seed: int = SEED,
 ) -> Pipeline:
-    """Gradient boosting: ``max_iter`` short trees, each fitted to what the sum still gets wrong.
+    """Preprocess, then gradient-boost (see :func:`boosting_estimator` for the loss and sizing).
 
-    With ``loss="squared_error"`` each tree fits the plain residuals; ``"absolute_error"`` fits
-    their sign, which is what minimizes the euro error a host sees; ``"quantile"`` with
-    ``quantile=q`` predicts the price that a fraction ``q`` of similar listings stay under.
-    Early stopping is off by default so the arc can trace the error round by round.
+    ``eval_metric`` is not exposed here: it only matters when reading a booster's
+    ``evals_result_`` round by round, which the arc does on the raw estimator (see
+    :func:`boosting_eval_curves`), never through a fitted pipeline.
     """
-    params: dict[str, Any] = {}
-    if quantile is not None:
-        params["quantile"] = quantile
-    booster = HistGradientBoostingRegressor(
-        loss=cast(Any, loss),
+    booster = boosting_estimator(
+        loss=loss,
+        quantile=quantile,
         max_iter=max_iter,
         learning_rate=learning_rate,
         max_leaf_nodes=max_leaf_nodes,
         early_stopping=early_stopping,
-        random_state=seed,
-        **params,
+        seed=seed,
     )
     return make_pipeline(booster, numeric, categorical)
 
 
-def knn_pipeline(
-    numeric: Sequence[str] = NUMERIC,
-    categorical: Sequence[str] = CATEGORICAL,
+def boosting_eval_curves(
+    Xd_fit: np.ndarray,
+    y_fit: np.ndarray,
+    Xd_val: np.ndarray,
+    y_val: np.ndarray,
+    Xd_test: np.ndarray,
+    y_test: np.ndarray,
     *,
-    k: int = 10,
-) -> Pipeline:
-    """Standardized k-nearest-neighbours regression."""
-    return make_pipeline(KNeighborsRegressor(n_neighbors=k), numeric, categorical, scale=True)
-
-
-def ols_pipeline(numeric: Sequence[str] = NUMERIC, categorical: Sequence[str] = CATEGORICAL):
-    """Ordinary least squares on the standardized design."""
-    return make_pipeline(LinearRegression(), numeric, categorical, scale=True)
-
-
-def lasso_pipeline(
-    numeric: Sequence[str] = NUMERIC,
-    categorical: Sequence[str] = CATEGORICAL,
-    *,
+    loss: str,
+    max_iter: int,
     seed: int = SEED,
-) -> Pipeline:
-    """Lasso with its penalty chosen by 5-fold cross-validation on the training rows."""
-    lasso = LassoCV(cv=5, random_state=seed, max_iter=20000)
-    return make_pipeline(lasso, numeric, categorical, scale=True)
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a booster for ``max_iter`` rounds and return its per-round MAE on the val and test rows.
+
+    The val and test rows are only *scored* each round — there is no early stopping, so neither
+    steers the fit: the arc reads the val curve to pick the number of rounds and plots the test
+    curve to show the overfitting. The booster is the round-tuning model, fitted on ``Xd_fit``
+    alone, so its test curve is that model's own trajectory, not the same quantity as the final
+    refit's test MAE. The ``evals_result_`` keys live here so the orchestrator stays free of
+    XGBoost internals.
+
+    Args:
+        Xd_fit: the inner-training design (already preprocessed) the booster learns from.
+        y_fit: its targets.
+        Xd_val: the validation design whose curve chooses the number of rounds.
+        y_val: its targets.
+        Xd_test: the held-out test design, scored each round for the chart only.
+        y_test: its targets.
+        loss: ``"squared_error"`` or ``"absolute_error"``.
+        max_iter: how many rounds to grow and trace.
+        seed: the booster's ``random_state``.
+
+    Returns:
+        ``(val_mae, test_mae)``, each a ``max_iter``-long array of the MAE after every round.
+    """
+    booster = boosting_estimator(loss=loss, max_iter=max_iter, eval_metric="mae", seed=seed)
+    booster.fit(Xd_fit, y_fit, eval_set=[(Xd_val, y_val), (Xd_test, y_test)], verbose=False)
+    history = booster.evals_result_
+    return (
+        np.asarray(history["validation_0"]["mae"], dtype=float),
+        np.asarray(history["validation_1"]["mae"], dtype=float),
+    )
 
 
 # --- Metrics ----------------------------------------------------------------

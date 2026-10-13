@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "airbnb-price-prediction"
 version = "0.1.0"
-description = "Let's Build Airbnb's Algorithm — a clean-architecture teaching project: real Inside Airbnb listings for Rome, an eight-part tree-ensemble arc, and an interactive nightly-price simulator."
+description = "Let's Build Airbnb's Algorithm — a clean-architecture teaching project: real Inside Airbnb listings for Rome, a seven-part tree-ensemble arc, and an interactive nightly-price simulator."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -16,6 +16,7 @@ keywords = [
     "random-forest",
     "gradient-boosting",
     "scikit-learn",
+    "xgboost",
     "clean-architecture",
     "teaching",
     "airbnb",
@@ -33,6 +34,7 @@ dependencies = [
     "pandas>=2.0",
     "numpy>=1.24",
     "scikit-learn>=1.4",
+    "xgboost>=2.0",
     "matplotlib>=3.7",
     "joblib>=1.3",
 ]

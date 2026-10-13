@@ -100,7 +100,7 @@ def _context(export: Export, **overrides):
 
 
 def test_every_fixture_is_valid_json_with_its_provenance(exported: Export) -> None:
-    """All twelve fixtures exist, parse strictly, and name the exact data and split behind them."""
+    """All eleven fixtures exist, parse strictly, and name the exact data and split behind them."""
     assert set(exported.written) == set(_load_script().FIXTURES)
     digest = pipeline.file_sha256(exported.snapshot)
     for name in exported.written:

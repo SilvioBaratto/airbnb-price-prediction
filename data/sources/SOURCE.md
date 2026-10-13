@@ -47,13 +47,6 @@ with the approximate coordinates of their centre, typed by hand for the simulato
 municipio each one belongs to is **not** written in the file: it is read from the 25 nearest
 listings when the simulator starts, so it always matches the snapshot's vocabulary.
 
-## 3. scikit-learn diabetes dataset (Part 8 only)
-
-The *no free lunch* comparison in Part 8 also ranks the methods on scikit-learn's bundled
-diabetes dataset (Efron, Hastie, Johnstone and Tibshirani, *Least Angle Regression*, Annals of
-Statistics, 2004): 442 patients, 10 baseline variables, disease progression one year later. It
-ships with scikit-learn (BSD-3-Clause), so no download is needed.
-
 ## Attribution
 
 > Contains data from Inside Airbnb (https://insideairbnb.com), Rome, 20 June 2026, licensed

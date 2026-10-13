@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `scripts/export_fixtures.py` — exports twelve JSON fixtures for the
+- `scripts/export_fixtures.py` — exports eleven JSON fixtures for the
   neuroespresso video animations (`airbnb_prezzi`), checked against the arc
   run they quote.
 - `airbnb run-arc` also writes `arc_summary.csv` and `arc_run.json`, a manifest
@@ -23,10 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cycle. The layering test now forbids mutual imports and sees relative and
   `from airbnb import x` imports.
 - Part 4's tree correlation is now the unbiased one-way ANOVA estimate,
-  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.046
+  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.047
   (forest), where the old estimator read 0.058 and 0.029.
-- Part 8's summary row no longer puts its cross-validated MAE in the held-out
-  test column.
+- Part 7 and the simulator's three models now use **XGBoost**
+  (`reg:absoluteerror` for the price, `reg:quantileerror` for the 10/90 band)
+  instead of scikit-learn's `HistGradientBoostingRegressor`, matching the
+  neuroespresso catalogue. Early stopping carves its own validation slice behind
+  the estimator, so `boosting_pipeline(...).fit(X, y)` is unchanged for callers.
+
+### Removed
+
+- **Part 8, the *no free lunch* comparison**, and the kNN, OLS and Lasso methods
+  it ranked, with the `nfl.json` fixture and the scikit-learn *diabetes* dataset
+  it used. The arc is now seven parts, ending on gradient boosting (CART →
+  pruning → bagging → random forest → out-of-bag error → permutation importance →
+  gradient boosting).
 
 ### Fixed
 

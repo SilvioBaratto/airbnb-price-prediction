@@ -1,4 +1,4 @@
-"""The eight parts, run on the small synthetic snapshot with small ensembles."""
+"""The seven parts, run on the small synthetic snapshot with small ensembles."""
 
 from __future__ import annotations
 
@@ -156,25 +156,11 @@ def test_part7_tunes_rounds_on_validation_for_both_losses(
     assert {"val_mae_squared", "test_mae_absolute"} <= set(curve.columns)
 
 
-def test_part8_ranks_the_lineup_on_both_datasets(
-    listings: pd.DataFrame, args: argparse.Namespace
-) -> None:
-    """The lineup is ranked on both datasets, and OLS wins on the near-linear diabetes data."""
-    result = arc.run_part8(listings, args)
-    board = pd.read_csv(args.output_dir / "part8_nfl.csv")
-    assert set(board["dataset"]) == {"airbnb_rome", "diabetes"}
-    assert board.groupby("dataset")["model"].count().eq(len(arc.lineup([], []))).all()
-    diabetes = board[board["dataset"] == "diabetes"]
-    assert diabetes.iloc[0]["model"] in {"OLS", "Lasso"}
-    assert "Rome #1" in result.note and "CV MAE" in result.note
-    assert result.mae_test is None  # a CV score is not a held-out test score
-
-
 def test_main_runs_the_whole_arc_on_a_snapshot_file(snapshot_csv: Path, tmp_path: Path) -> None:
     """The orchestrator wires every part and prints the summary table."""
     out = tmp_path / "o"
     results = arc.main(["--listings", str(snapshot_csv), "--output-dir", str(out)])
-    assert [r.part for r in results] == [0, 1, 2, 3, 4, 5, 6, 7, 7, 8]
+    assert [r.part for r in results] == [0, 1, 2, 3, 4, 5, 6, 7, 7]
     summary = pd.read_csv(out / "arc_summary.csv")
     assert summary["part"].tolist() == [r.part for r in results]
     manifest = json.loads((out / "arc_run.json").read_text())

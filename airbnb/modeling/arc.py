@@ -1,14 +1,14 @@
-"""Orchestrator for the eight-part tree-ensemble arc (README "The model, part by part").
+"""Orchestrator for the seven-part tree-ensemble arc (README "The model, part by part").
 
-Loads the snapshot **once**, carves the one fixed 80/20 split (Parts 1-7 share it), then runs
-Parts 1->8 as ``run_partN`` section functions and prints the summary table. Besides each part's
+Loads the snapshot **once**, carves the one fixed 80/20 split (all parts share it), then runs
+Parts 1->7 as ``run_partN`` section functions and prints the summary table. Besides each part's
 CSV, the output directory receives ``arc_summary.csv`` (the table) and ``arc_run.json``, the
 manifest of a finished run (snapshot digest, seed, split, ensemble sizes, and the digest of
 every CSV it wrote), which ``scripts/export_fixtures.py`` checks before quoting any of it.
-Every number is produced here by running scikit-learn at ``config.SEED`` — never hand-written.
+Every number is produced here by running scikit-learn and XGBoost at ``config.SEED`` — never
+hand-written.
 Whenever a part has to *choose* something (pruning strength, number of boosting rounds) it
-chooses on the training rows; the test rows are only ever scored. Part 8 runs its own 5-fold CV
-on the full snapshot and on a second, unrelated dataset.
+chooses on the training rows; the test rows are only ever scored.
 
 Usage::
 
@@ -28,7 +28,6 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.datasets import load_diabetes
 from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.tree import DecisionTreeRegressor, export_text
@@ -52,7 +51,7 @@ CV_FOLDS = 5
 def parse_cli(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse the arc flags."""
     parser = argparse.ArgumentParser(
-        prog="airbnb run-arc", description="Run the eight-part tree-ensemble arc."
+        prog="airbnb run-arc", description="Run the seven-part tree-ensemble arc."
     )
     parser.add_argument(
         "--listings",
@@ -617,20 +616,20 @@ def _tune_rounds(
     X_in, X_val, y_in, y_val = train_test_split(
         split.X_train, split.y_train, test_size=0.25, random_state=seed
     )
-    model = modeling.boosting_pipeline(loss=loss, max_iter=max_iter, seed=seed)
-    model.fit(X_in, np.asarray(y_in))
-    booster = model.named_steps["est"]
-    val = np.array(
-        [
-            modeling.mae(np.asarray(y_val), p)
-            for p in booster.staged_predict(modeling.design(model, X_val))
-        ]
-    )
-    test = np.array(
-        [
-            modeling.mae(split.y_test, p)
-            for p in booster.staged_predict(modeling.design(model, split.X_test))
-        ]
+    pre = modeling.build_preprocessor()
+    Xd_in = np.asarray(pre.fit_transform(X_in), dtype=np.float32)
+    Xd_val = np.asarray(pre.transform(X_val), dtype=np.float32)
+    Xd_test = np.asarray(pre.transform(split.X_test), dtype=np.float32)
+    val, test = modeling.boosting_eval_curves(
+        Xd_in,
+        np.asarray(y_in, dtype=float),
+        Xd_val,
+        np.asarray(y_val, dtype=float),
+        Xd_test,
+        split.y_test,
+        loss=loss,
+        max_iter=max_iter,
+        seed=seed,
     )
     return int(np.argmin(val)) + 1, val, test
 
@@ -696,92 +695,6 @@ def run_part7(
     return results
 
 
-# --- Part 8 — no method always wins -------------------------------------------
-def lineup(
-    numeric: list[str], categorical: list[str], *, seed: int = config.SEED
-) -> dict[str, Pipeline]:
-    """Every method of both series, each with one fixed recipe applied to any dataset."""
-    return {
-        "mean": modeling.mean_pipeline(numeric, categorical),
-        "kNN (k=10)": modeling.knn_pipeline(numeric, categorical, k=10),
-        "OLS": modeling.ols_pipeline(numeric, categorical),
-        "Lasso": modeling.lasso_pipeline(numeric, categorical, seed=seed),
-        "tree": modeling.tree_pipeline(numeric, categorical, min_samples_leaf=20, seed=seed),
-        "bagging": modeling.bagging_pipeline(numeric, categorical, n_estimators=100, seed=seed),
-        "random forest": modeling.forest_pipeline(numeric, categorical, seed=seed),
-        # Early stopping lets one recipe size itself to 442 rows or to 30,000.
-        "boosting": modeling.boosting_pipeline(
-            numeric,
-            categorical,
-            loss="absolute_error",
-            max_iter=BOOSTING_MAX_ITER,
-            early_stopping=True,
-            seed=seed,
-        ),
-    }
-
-
-def _leaderboard(
-    models: dict[str, Pipeline], X: pd.DataFrame, y: np.ndarray, seed: int
-) -> pd.DataFrame:
-    folds = KFold(n_splits=CV_FOLDS, shuffle=True, random_state=seed)
-    rows = []
-    for name, model in models.items():
-        scores = cross_val_score(model, X, y, cv=folds, scoring="neg_mean_absolute_error")
-        rows.append({"model": name, "cv_mae": float(-scores.mean())})
-    board = pd.DataFrame(rows).sort_values("cv_mae", ignore_index=True)
-    board.insert(0, "rank", np.arange(1, len(board) + 1))
-    return board
-
-
-def run_part8(
-    listings: pd.DataFrame, args: argparse.Namespace, *, seed: int = config.SEED
-) -> modeling.PartResult:
-    """The same lineup, ranked by 5-fold CV on Rome and on a dataset with another structure.
-
-    The second dataset is scikit-learn's bundled *diabetes* study (442 patients, 10 measured
-    variables, disease progression one year later), where the signal is close to additive and
-    linear. The ranking flips: what wins depends on whether a method's assumptions match the
-    data, not on how sophisticated it is. Writes ``part8_nfl.csv``.
-
-    Each method runs one fixed recipe on both datasets (boosting stops early on its own instead
-    of Part 7's tuned rounds) and is scored by cross-validation over every row, test rows
-    included. Its numbers rank the methods against each other; they are not comparable with the
-    held-out test MAE of Parts 1-7, so the summary row leaves that column blank.
-    """
-    X, y = modeling.make_xy(listings)
-    rome = _leaderboard(lineup(modeling.NUMERIC, modeling.CATEGORICAL, seed=seed), X, y, seed)
-    diabetes = load_diabetes(as_frame=True)
-    Xd = diabetes.data
-    yd = diabetes.target.to_numpy()
-    other = _leaderboard(lineup(list(Xd.columns), [], seed=seed), Xd, yd, seed)
-    board = pd.concat(
-        [rome.assign(dataset="airbnb_rome"), other.assign(dataset="diabetes")], ignore_index=True
-    )
-    path = _write(board[["dataset", "rank", "model", "cv_mae"]], args, "part8_nfl.csv")
-
-    def _line(frame: pd.DataFrame) -> str:
-        return " > ".join(f"{r.model} {r.cv_mae:.1f}" for r in frame.itertuples(index=False))
-
-    def _rank_of(frame: pd.DataFrame, model: str) -> int:
-        return int(frame.loc[frame["model"] == model, "rank"].iloc[0])
-
-    print(f"[Part 8] Rome (EUR/night):      {_line(rome)}")
-    print(f"[Part 8] diabetes (score pts):  {_line(other)}")
-    print(f"[Part 8]   wrote {path}")
-    rome_best, other_best = rome.iloc[0], other.iloc[0]
-    return modeling.PartResult(
-        8,
-        f"no free lunch ({CV_FOLDS}-fold CV)",
-        None,
-        None,
-        None,
-        note=f"CV MAE, fixed recipes. Rome #1 {rome_best['model']} {rome_best['cv_mae']:.2f} "
-        f"(OLS #{_rank_of(rome, 'OLS')}); diabetes #1 {other_best['model']} "
-        f"({rome_best['model']} #{_rank_of(other, str(rome_best['model']))})",
-    )
-
-
 # --- Charts -----------------------------------------------------------------
 def _plot_lines(
     frame: pd.DataFrame,
@@ -832,7 +745,7 @@ def _plot_bars(
 
 # --- Orchestrator -----------------------------------------------------------
 def main(argv: list[str] | None = None) -> list[modeling.PartResult]:
-    """Load once, carve one fixed split, run Parts 1->8 and print the summary table."""
+    """Load once, carve one fixed split, run Parts 1->7 and print the summary table."""
     args = parse_cli(argv)
     # The manifest certifies a finished run. Removing it first means a crash leaves part CSVs
     # behind with no manifest, so nothing downstream can mistake them for a complete run.
@@ -856,7 +769,6 @@ def main(argv: list[str] | None = None) -> list[modeling.PartResult]:
     results.append(run_part5(split, forest))
     results.append(run_part6(split, forest, args, seed=args.seed))
     results.extend(run_part7(split, args, seed=args.seed))
-    results.append(run_part8(listings, args, seed=args.seed))
 
     print()
     print(modeling.format_report(results))

@@ -4,7 +4,7 @@ Four subcommands:
 
 * ``fetch-data`` — download the Inside Airbnb dump and rebuild the cleaned snapshot (forwards to
   :func:`airbnb.datasource.insideairbnb.main`).
-* ``run-arc`` — run the eight-part tree-ensemble arc (forwards to :func:`airbnb.modeling.arc.main`).
+* ``run-arc`` — run the seven-part tree-ensemble arc (forwards to :func:`airbnb.modeling.arc.main`).
 * ``train`` — fit the price models once and save them to disk
   (:meth:`airbnb.infrastructure.predictors.ModelPredictor.save`).
 * ``simulate`` — interactive nightly-price simulator; wires the place repository, a
@@ -121,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     arc_cmd = sub.add_parser(
         "run-arc",
         add_help=False,
-        help="run the eight-part tree-ensemble arc (see: airbnb run-arc --help)",
+        help="run the seven-part tree-ensemble arc (see: airbnb run-arc --help)",
     )
     arc_cmd.set_defaults(func=_handle_run_arc)
 
@@ -143,7 +143,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="load saved models from this path instead of training on launch "
-        f"(e.g. {paths.MODEL_JOBLIB}); falls back to training if the file is missing",
+        f"(e.g. {paths.MODEL_JOBLIB}); falls back to training if the file is missing. "
+        "Only load a file you produced with `airbnb train` — joblib runs code when it unpickles",
     )
     sim.add_argument(
         "--places",
