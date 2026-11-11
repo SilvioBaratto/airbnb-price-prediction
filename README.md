@@ -170,12 +170,18 @@ number below is printed by `airbnb run-arc` — never typed by hand.
 |---|---|---:|
 | — | always answer the mean (200.52 €) | **87.13 €** |
 | 1 | **regression tree (CART)**: the first cut is `bathrooms ≤ 1.75`; three levels, 8 leaves | 61.14 € |
-| 2 | grown to 24,840 leaves it memorizes (train 0.00, test 66.68); **cost-complexity pruning** with α by 5-fold CV keeps 132 | 54.40 € |
-| 3 | **bagging**: 200 trees on bootstrap resamples (each holds 63.2% of the listings); a lone tree scores 68.08 | 47.80 € |
-| 4 | **random forest** (11 of 33 columns per split): the 50 bagged trees all open on `bathrooms`, the forest's spread across `accommodates`, `bathrooms`, `bedrooms` and others; the correlation ρ between two trees grown on the same data falls from 0.083 to 0.047 (trees grown on 5,099-row slices; spread over four slicings ±0.003 and ±0.001) | 46.65 € |
-| 5 | **out-of-bag error**: each listing graded by the 36.8% of trees that never saw it — OOB 47.32 vs test 46.65, no test set needed | — |
-| 6 | **permutation importance** (OOB): shuffling `km_to_center` costs +20.97 €, `bathroom_shared` +0.21 €; split-gain ranks `bathrooms` first instead | — |
+| 2 | grown to 24,846 leaves it memorizes (train 0.00, test 67.19); **cost-complexity pruning** with α by 5-fold CV keeps 132 | 54.14 € |
+| 3 | **bagging**: 200 trees on bootstrap resamples (each holds 63.2% of the listings); a lone tree scores 68.07 | 47.78 € |
+| 4 | **random forest** (11 of 33 columns per split): the 50 bagged trees all open on `bathrooms`, the forest's spread across `accommodates`, `bathrooms`, `bedrooms` and others; the correlation ρ between two trees grown on the same data falls from 0.083 to 0.046 (trees grown on 5,099-row slices; spread over four slicings ±0.003 and ±0.001) | 46.66 € |
+| 5 | **out-of-bag error**: each listing graded by the 36.8% of trees that never saw it — OOB 47.23 vs test 46.66, no test set needed | — |
+| 6 | **permutation importance** (OOB): shuffling `km_to_center` costs +21.06 €, `bathroom_shared` +0.22 €; split-gain ranks `bathrooms` first instead | — |
 | 7 | **gradient boosting** (XGBoost), 8-leaf trees on the residuals: best at 564 rounds, worse by 3,000 (validation 48.51 → 49.07); with **absolute loss** | 46.58 € → **44.85 €** |
+
+The table was recomputed on a clean clone with Python 3.12.13, scikit-learn 1.9.1, XGBoost 3.4.1,
+NumPy 2.5.4 and pandas 3.1.1; a run is deterministic on one environment. The dependencies are
+not pinned, and the scikit-learn trees (Parts 2–6) move by up to about half a euro between
+releases — a run on scikit-learn 1.7.2 reads 54.30 € for the pruned tree and 46.59 € for the
+forest — while Parts 1 and 7 came out identical in both.
 
 Rome's prices turn on thresholds and interactions — a second bathroom matters, distance matters
 more in the centre — which is what trees capture by cutting the table, random forests steady by

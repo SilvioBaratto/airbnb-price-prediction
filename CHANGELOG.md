@@ -23,7 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cycle. The layering test now forbids mutual imports and sees relative and
   `from airbnb import x` imports.
 - Part 4's tree correlation is now the unbiased one-way ANOVA estimate,
-  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.047
+  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.046
   (forest), where the old estimator read 0.058 and 0.029.
 - Part 7 and the simulator's three models now use **XGBoost**
   (`reg:absoluteerror` for the price, `reg:quantileerror` for the 10/90 band)
