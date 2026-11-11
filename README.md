@@ -59,7 +59,7 @@ needs the network. `airbnb fetch-data` rebuilds it from the upstream dump.
 ### Train once, then serve fast
 
 `airbnb train` fits three gradient-boosting models (the suggested price, and the 10th and 90th
-percentile that bound the band) and saves them to `models/price_model.joblib` (~1 MB).
+percentile that bound the band) and saves them to `models/price_model.joblib` (~2.7 MB).
 `airbnb simulate --model <path>` loads them instantly. Without `--model`, or if the file is
 missing, the simulator trains on launch, which takes a couple of seconds on the snapshot. The
 weights are not committed: a joblib file is tied to the scikit-learn and XGBoost versions that
