@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -161,6 +163,21 @@ def test_forwarding_subcommands_pass_their_flags_through(
     monkeypatch.setattr(f"{module}.{attr}", lambda argv: seen.append(argv))
     assert app.main([command, "--seed", "3"]) == 0
     assert seen == [["--seed", "3"]]
+
+
+def test_python_dash_m_airbnb_reaches_the_same_cli() -> None:
+    """The README promises ``python -m airbnb <subcommand>``; run it as a real process."""
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-m", "airbnb", "--help"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    for command in ("fetch-data", "run-arc", "train", "simulate"):
+        assert command in result.stdout
 
 
 # --- end to end -----------------------------------------------------------------
