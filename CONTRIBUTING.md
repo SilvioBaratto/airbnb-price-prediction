@@ -31,7 +31,7 @@ Every change earns a test. The loop we follow for each task:
 5. **Commit** — one focused commit per logical change.
 
 ```bash
-pytest -q              # full suite (~40 s, never touches the network or the real snapshot)
+pytest -q              # full suite (~1 min, never touches the network or the real snapshot)
 ruff check . && ruff format --check .
 pyright                # informational; a known pandas/numpy stub baseline is tolerated
 ```

@@ -278,7 +278,7 @@ snapshot is one `airbnb fetch-data` away; unit tests and CI guard everything.
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                            # the full test suite (~40 s)
+pytest -q                            # the full test suite (~1 min)
 ruff check . && ruff format --check .
 pyright                              # informational; a known pandas/numpy stub baseline is tolerated
 ```
