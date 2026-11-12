@@ -56,7 +56,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - README and CONTRIBUTING figures re-measured on a clean clone: model ~2.7 MB,
   test suite ~1 min, and the Part 2–6 errors in the README table.
 - `parse_bathrooms` no longer fills a float64 column with a nullable `Float64`
-  series, which pandas 4 would reject; the rebuilt snapshot is unchanged.
+  series, which pandas 4 would reject; the rebuilt snapshot is unchanged, and a
+  test now fails on the warning.
 
 ## [0.1.0] - 2026-10-05
 

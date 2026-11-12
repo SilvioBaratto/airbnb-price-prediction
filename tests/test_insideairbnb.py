@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +66,18 @@ def test_parse_bathrooms_fills_gaps_from_the_text_and_flags_shared() -> None:
     )
     assert count.tolist() == [1.5, 1.0, 0.5, 2.0]
     assert shared.tolist() == [0.0, 1.0, 0.0, 0.0]
+
+
+def test_parse_bathrooms_fills_a_float64_column_without_warnings() -> None:
+    """Filling with a nullable ``Float64`` series warns on pandas 3.1 and fails on pandas 4."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        count, shared = iab.parse_bathrooms(
+            pd.Series([np.nan, 1.0, np.nan]),
+            pd.Series(["1.5 baths", "1 shared bath", None]),
+        )
+    assert count.dtype == np.float64
+    assert shared.dtype == np.float64
 
 
 def test_count_amenities_tolerates_missing_and_malformed_lists() -> None:
