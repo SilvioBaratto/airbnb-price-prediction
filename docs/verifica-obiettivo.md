@@ -61,7 +61,7 @@ Tutto su un clone pulito, nell'ordine:
 
 I dati di Roma si caricano e l'installazione riesce: nessuna domanda al proprietario necessaria.
 
-Sul ramo di questa verifica (dopo le correzioni): `pytest -q` dà 122 passed, senza avvisi;
+Sul ramo di questa verifica (dopo le correzioni): `pytest -q` dà 123 passed, senza avvisi;
 `ruff` pulito. La CI di `main` è verde (ultima esecuzione: 1 m 7 s).
 
 Due osservazioni dalla prova su pulito:
@@ -139,6 +139,7 @@ sono stati confrontati uno per uno.
 | `d997309` | `parse_bathrooms` riempiva una colonna float64 con una serie `Float64` nullable: avviso `Pandas4Warning` oggi, errore con pandas 4, che avrebbe rotto `airbnb fetch-data`. Corretto con un cast; lo snapshot ricostruito dal file grezzo è identico byte per byte prima e dopo, e il test passa con gli avvisi trattati come errori. |
 | `1ff6a0a` | `airbnb/__main__.py` non era coperto da nessun test (0%) pur essendo promesso dal README (`python -m airbnb <sottocomando>`). Aggiunto il test. |
 | `5f12b40` | Il README dava il modello salvato a «~1 MB»; misurato 2,7 MB. |
+| `6135d44` | La correzione di `parse_bathrooms` (`d997309`) non aveva un test e la suite non trasforma gli avvisi in errori: una regressione sarebbe passata in CI fino a pandas 4. Aggiunto un test che esegue la funzione con gli avvisi come errori: fallisce sul codice vecchio con pandas 3.1.1 (`Pandas4Warning`) e passa su quello corretto. |
 
 ### Lasciate, con il motivo
 
