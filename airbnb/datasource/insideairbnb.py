@@ -89,7 +89,9 @@ def parse_bathrooms(bathrooms: pd.Series, text: pd.Series) -> tuple[pd.Series, p
     """
     lowered = text.astype("string").str.lower().fillna("")
     extracted = lowered.str.extract(r"(\d+(?:\.\d+)?)")[0]
-    from_text = cast(pd.Series, pd.to_numeric(extracted, errors="coerce"))
+    # The string dtype makes to_numeric return a nullable Float64, which pandas 4 refuses to use
+    # as a fill value for a float64 column.
+    from_text = cast(pd.Series, pd.to_numeric(extracted, errors="coerce")).astype(float)
     from_text = from_text.where(~(lowered.str.contains("half") & from_text.isna()), 0.5)
     count = cast(pd.Series, pd.to_numeric(bathrooms, errors="coerce")).fillna(from_text)
     shared = lowered.str.contains("shared").astype(float)

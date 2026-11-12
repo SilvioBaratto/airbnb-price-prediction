@@ -15,6 +15,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `airbnb run-arc` also writes `arc_summary.csv` and `arc_run.json`, a manifest
   of the finished run (snapshot SHA-256, seed, split, ensemble sizes, and the
   SHA-256 of every CSV it wrote).
+- `docs/verifica-obiettivo.md` — the repository checked against the video's goal
+  (in Italian), with a clean-clone run and the README numbers recomputed.
+- A test for the `python -m airbnb` entry point.
 
 ### Changed
 
@@ -23,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cycle. The layering test now forbids mutual imports and sees relative and
   `from airbnb import x` imports.
 - Part 4's tree correlation is now the unbiased one-way ANOVA estimate,
-  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.047
+  averaged over four slicings with its spread: ρ 0.083 (bagging) and 0.046
   (forest), where the old estimator read 0.058 and 0.029.
 - Part 7 and the simulator's three models now use **XGBoost**
   (`reg:absoluteerror` for the price, `reg:quantileerror` for the 10/90 band)
@@ -50,7 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   size (it only checked seed and row count) and any CSV altered after the run,
   ships pruning alphas with
   significant digits (12 of 20 were rounded to 0), and writes strict JSON.
-- README and CONTRIBUTING figures re-measured: model ~1 MB, test suite ~40 s.
+- README and CONTRIBUTING figures re-measured on a clean clone: model ~2.7 MB,
+  test suite ~1 min, and the Part 2–6 errors in the README table.
+- `parse_bathrooms` no longer fills a float64 column with a nullable `Float64`
+  series, which pandas 4 would reject; the rebuilt snapshot is unchanged, and a
+  test now fails on the warning.
 
 ## [0.1.0] - 2026-10-05
 
